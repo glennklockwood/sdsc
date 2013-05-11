@@ -34,7 +34,7 @@ die "Full job display not compatible with html output" if $options{html}
 ### Set appropriate parameters if not specified
 $options{slotsize} = 1 if !defined($options{slotsize});
 $options{torquebin} = '/opt/torque/bin' if !defined($options{torquebin});
-$options{format} = 'html' if !defined($options{format});
+$options{format} = 'table' if !defined($options{format});
 
 ### Parse shownodes option (if specified)
 @{$options{shownodes}} = split(m/,/,join(',',@{$options{shownodes}}))

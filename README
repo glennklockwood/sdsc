@@ -5,5 +5,23 @@ that function on their own.
 
 Here are brief descriptions of the more useful tools:
 
+For users:
 * nodeview - parses pbsnodes and qstat and presents an overview of the state
-  of the cluster
+  of the cluster.  Lots of options to refine the output to a subset of nodes,
+  view a cluster-wide summary, and more.
+* getfreesocket - returns a list of CPU sockets on the Linux system that aren't
+  occupied by a process or thread using a lot of CPU.  Designed to provide
+  input for an application like numactl to bind jobs to a single socket on a
+  shared compute node
+
+For administrators:
+* nfsjobs.pl - scans the queue and finds all jobs running out of a directory
+  mounted via the specified NFS server.  Good for quickly finding out who might
+  be hammering NFS.
+* pbslogparse.pl - a generic log parser for PBS/Torque logs.  Turns the end-
+  of-job lines into hashes, then prints formatted output of your choosing
+  (e.g., pbslogparse.pl 20130414 -o jobid,user,end,ctime=end)
+* splunk_from_trace - a simple script that takes the output of PBS/Torque's
+  tracejob command and generates a Splunk query that returns the logs from
+  all nodes participating in the job for the duration the job was being
+  tracked by the resource manager

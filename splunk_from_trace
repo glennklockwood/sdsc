@@ -1,0 +1,23 @@
+#!/bin/bash
+#
+#  generate a splunk query to view all logs from all nodes participating in a 
+#  given job over the time the job was active
+#
+job=$(sed -e 's/.trace$//' <<< $1)
+earliest=$(awk 'BEGIN {n=0} /^[0-9]/ {if ( n==0 ) { printf("%s:%s", $1, $2); n++}}' $job.trace)
+latest=$(tail -n1 $job.trace | awk '{printf("%s:%s", $1, $2)}')
+pcregrep -o 'exec_host=[^\s]+' $job.trace | \
+    sed -e 's/+/\n/g' | \
+    sed -e 's#/[0-9]*$##' | \
+    sed -e 's/exec_host=//' | \
+    sort -u | \
+    awk '
+BEGIN { n=0 } 
+{
+  if ( n == 0 ) { printf( "(" ) }
+  if ( n > 0 ) { printf( " OR " ) }
+  printf("host=%s.sdsc.edu", $1);
+  n++;
+}
+END { printf(") AND NOT sshd AND NOT crond AND NOT audit AND NOT pam_unix ") }'
+echo "earliest=$earliest latest=$latest"

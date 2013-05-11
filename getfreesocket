@@ -1,0 +1,189 @@
+#!/usr/bin/env perl
+#
+#  getfreesocket - returns processor[s] that are not currently running any
+#    jobs.  If passed -explicit on the command line, returns the list of
+#    cores on the first free processor found.  If passed -explicit=N, returns
+#    the list of cores of the first N processors found.
+#
+#  October 2012                                             Glenn K. Lockwood
+#
+
+use strict;
+use warnings;
+
+################################################################################
+# parse command line parameters
+#
+my $sockets_requested;
+if ( defined($ARGV[0]) && $ARGV[0] =~ m/^-explicit(.*)$/ )
+{
+    my $optarg = $1;
+    if ( $optarg =~ m/=(\d+)/ )
+    {
+        $sockets_requested = $1;
+    }
+    else
+    {
+        $sockets_requested = 1;
+    }
+}
+
+################################################################################
+# determine the processor topology
+#
+my (%cpuinfo, @cpuinfo);
+my (%core_to_socket, %sockets_available, %socket_to_core);
+my $buffer;
+
+open(CPUINFO,"/proc/cpuinfo") or die;
+while ( my $line = <CPUINFO> )
+{
+   next unless $line =~ m/^([^:]+?):(.*)$/;
+   my ($key, $val) = ($1, $2);
+   $key =~ s/(^\s*|\s*$)//g;
+   $val =~ s/(^\s*|\s*$)//g;
+   if ( $key eq "processor" && %cpuinfo )
+   {
+       my %tmp = %cpuinfo;
+       push(@cpuinfo, \%tmp);
+       undef(%cpuinfo);
+   }
+   $cpuinfo{$key} = $val;
+}
+close(CPUINFO);
+# get that last cpu on the stack
+{
+   my %tmp = %cpuinfo;
+   push(@cpuinfo, \%tmp);
+   undef(%cpuinfo);
+}
+
+foreach ( @cpuinfo )
+{
+    my $socket_id = $_->{'physical id'};
+    my $core_id = $_->{processor};
+    $core_to_socket{$core_id} = $socket_id;
+    $sockets_available{$socket_id}++;
+    push( @{$socket_to_core{$socket_id}}, $core_id );
+}
+
+#my $buffer = "The following sockets exist: ";
+#$buffer .= join( ' ', keys(%sockets_available));
+#print STDERR $buffer . "\n";
+
+################################################################################
+# find high-load processes (simulations utilizing > 50% of a core)
+#
+my @pids;
+my $pidlist = `ps -e -opid= -opcpu=`;
+foreach my $line ( split(m/(\n\r?)+/, $pidlist) )
+{
+    next unless $line =~ m/^\s*(\d+)\s+(\S+)\s*$/;
+    push(@pids, $1) if $2 > 50;
+}
+
+################################################################################
+# determine which processors own cores that are in use
+#
+my (%sockets_in_use, $tot_threads);
+for my $PID ( @pids )
+{
+    my (%pid_sockets_in_use, $pid_tot_threads);
+    if ( ! -d "/proc/$PID/task" )
+    {
+        warn sprintf("PID %d not found (%s)", $PID, "/proc/$PID/task");
+        next;
+    }
+    opendir(TASKS, "/proc/$PID/task") or next;
+    my @taskids = readdir(TASKS);
+    closedir(TASKS);
+
+    my %cores_in_use;
+    foreach my $taskid ( @taskids )
+    {
+        next unless $taskid =~ m/^\d+$/;
+        open(TASKSTAT,"/proc/$PID/task/$taskid/status") or die;
+        while ( my $line = <TASKSTAT> )
+        {
+            next unless $line =~ m/^Cpus_allowed_list:\s*(.*)\s*$/;
+            my $cpulist_for_task = $1;
+            while ( $cpulist_for_task =~ m/(\d+)-(\d+)/ )
+            {
+                my @range = $1 .. $2;
+                my $newstring = join( ' ', @range);
+                $cpulist_for_task =~ s/\d+-\d+/$newstring/;
+            }
+    
+            my @cpulist_for_task = split(m/(\s+|,)/, $cpulist_for_task);
+            $cores_in_use{$_} = 1 foreach (@cpulist_for_task);
+        }
+        close(TASKSTAT);
+    }
+
+    $buffer = "";
+    $buffer .= sprintf("PID %d is using the following cores: ", $PID );
+    foreach ( sort{$a<=>$b}(keys(%cores_in_use)) )
+    {
+        if ( defined($core_to_socket{$_}) )
+        {
+            $buffer .= sprintf( " %d", $_, );
+            $pid_sockets_in_use{$core_to_socket{$_}}++;
+            $pid_tot_threads++;
+        }
+    }
+    $buffer .= "\n";
+    print STDERR $buffer;
+    $buffer = "";
+
+    $buffer .= sprintf( "PID %d is using the following sockets:", $PID ); 
+    foreach ( sort{$a<=>$b}(keys(%pid_sockets_in_use)) )
+    {
+        $buffer .= sprintf( " %d(%d%%)", $_, 
+            $pid_sockets_in_use{$_}*100/$pid_tot_threads );
+    }
+    $buffer .= "\n";
+    print STDERR $buffer;
+
+    $sockets_in_use{$_} += $pid_sockets_in_use{$_} 
+        foreach keys(%pid_sockets_in_use);
+    $tot_threads += $pid_tot_threads;
+}
+
+################################################################################
+# drop the processors that are not 100% free from the socket list
+#
+delete($sockets_available{$_}) foreach keys(%sockets_in_use);
+
+################################################################################
+# print out the available processors (or the cores on available sockets)
+#
+$buffer = "";
+my $found = 0;
+foreach ( sort {$a <=> $b} keys(%sockets_available) )
+{
+    if ( !defined($sockets_requested) )
+    {
+        $buffer .= " " if $found > 0;
+        $buffer .= sprintf( "%d", $_ );
+        $found++;
+    }
+    elsif ( $sockets_requested > 0 )
+    {
+        foreach my $core_id ( @{$socket_to_core{$_}} )
+        {
+            $buffer .= "," if $found > 0;
+            $buffer .= sprintf( "%d", $core_id );
+            $found++;
+        }
+        $sockets_requested--;
+    }
+}
+
+if ( $found > 0 && (!defined($sockets_requested) || $sockets_requested == 0) ) 
+{ 
+    print $buffer . "\n" 
+}
+else 
+{ 
+    exit 1; 
+}
