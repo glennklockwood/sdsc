@@ -1,0 +1,899 @@
+#!/usr/bin/env perl
+#
+################################################################################
+# nodeview - parse Torque's pbsnodes and qstat and deliver a human-readable
+#  output
+#
+# Glenn K. Lockwood, San Diego Supercomputer Center                 May 2013
+################################################################################
+#
+
+use strict; 
+use warnings;
+use Sys::Hostname;
+### a hack for trestles, which does not come with the necessary XML parsers
+BEGIN 
+{ 
+    if ( hostname() =~ m/^trestles/ ) {
+        use lib "/home/glock/perl/lib/perl5/site_perl/5.8.8";
+        use lib "/home/glock/perl/lib/perl5/site_perl";
+    }
+}
+use XML::Simple;
+use Data::Dumper;
+use Term::ANSIColor;
+use Getopt::Long;
+
+use constant BYTE_TO_GBYTE => 1024*1024*1024;
+
+### Get command-line input
+our %options = %{ get_options() };
+die "Full job display not compatible with html output" if $options{html}
+    && ( $options{full} || $options{jobinfo} );
+
+### Set appropriate parameters if not specified
+$options{slotsize} = 1 if !defined($options{slotsize});
+$options{torquebin} = '/opt/torque/bin' if !defined($options{torquebin});
+$options{format} = 'html' if !defined($options{format});
+
+### Parse shownodes option (if specified)
+@{$options{shownodes}} = split(m/,/,join(',',@{$options{shownodes}}))
+    if defined($options{shownodes});
+
+################################################################################
+### Read in and process all of the data.  Populate the following databases:
+###   nodeinfo: contains all nodes, keyed by node name
+###   jobinfo: contains all jobs, keyed by pbs jobid
+###   clusterinfo: contains basic statistical info on all nodes and jobs
+my ( $nodeinfo, $jobinfo, $clusterinfo ) = ( {}, {}, {} );;
+
+$jobinfo = get_job_data( );
+digest_job_data( $jobinfo );
+
+$nodeinfo = get_node_data ( );
+digest_node_data( $nodeinfo, $jobinfo );
+
+### Collect cluster-level data only if we need to present it
+if ( $options{summary} )
+{
+    add_node_to_stats( $nodeinfo->{$_}, $clusterinfo ) 
+        foreach keys(%{$nodeinfo});
+
+    add_job_to_stats( $jobinfo->{$_}, $clusterinfo )
+        foreach keys(%{$jobinfo});
+}
+
+### Loop over all jobs to attach node info.  As of May 10, 2013, this connected
+### data is never actually used.
+attach_nodes_to_job( $nodeinfo, $jobinfo->{$_} )
+    foreach keys(%{$jobinfo});
+
+################################################################################
+### Output list of requested information
+print_job_list($jobinfo) if $options{jobview};
+
+### Print the cluster-level summary if not printing node list
+if ( $options{quiet} )
+{
+    print_summary($clusterinfo) if $options{summary};
+}
+else ### if node list is being printed, it will print a summary of printed nodes
+{
+    print_node_list($nodeinfo) 
+}
+
+################################################################################
+### Subroutines
+################################################################################
+### get_options: parse command line options
+sub get_options
+{
+    my %options;
+    if ( @ARGV > 0 ) 
+    {
+        GetOptions(
+        # show only overloaded nodes (default:off)
+            "overloads!"    => \$options{overloads}, 
+
+        # show node status messages (default:off)
+            "m|messages"    => \$options{messages},  
+
+        # specify jobinfo input (default:qstat -x)
+            "jobinfo=s"     => \$options{jobinfo},   
+
+        # show nodes + jobs on nodes (default:off)
+            "f|full"        => \$options{full},      
+
+        # include usage summary at end (default:off)
+            "summary"       => \$options{summary},   
+
+        # show only certain nodes (default:show all)
+            "n|node=s@"     => \$options{shownodes},   
+
+        # show only nodes with given property (default:show all)
+            "p|properties=s"=> \$options{showproperties}, 
+
+        # number of cores per schedule slot (default:autodetect)
+            "slotsize=i"    => \$options{slotsize},
+
+        # show only jobs, not nodes (default:off)
+            "jobview"       => \$options{jobview},
+
+        # show only nodes with given state (default:all states)
+            "s|state=s"     => \$options{showstate},
+
+        # specify nodeinfo input (default:pbsnodes -x)
+            "nodeinfo=s"    => \$options{nodeinfo},  
+
+        # output format: table, html (default:table)
+            "format=s"      => \$options{format},
+
+        # suppress output of node list (default:off)
+            "quiet"         =>  \$options{quiet},
+
+        # location of torque binaries(default:/opt/torque/bin)
+            "torquebin"     => \$options{torquebin},
+        );
+    }
+    return \%options;
+}
+
+################################################################################
+### get_node_data: Retrieve full list of node XML and put into a database (hash)
+sub get_node_data
+{
+    my $nodeinfo;
+    my $inputxml;
+    my $xml = new XML::Simple;
+
+    if ( defined($options{nodeinfo}) )
+    {
+        open(INPUTFILE, sprintf("<%s",$options{nodeinfo})) or die 
+            "Unable to open file " . $options{nodeinfo};
+        local $/;
+        $inputxml = <INPUTFILE>;
+        close INPUTFILE;
+    }
+    else
+    {
+        my $exe = $options{torquebin} . '/pbsnodes -x';
+        $inputxml = `$exe`;
+    }
+    $nodeinfo = $xml->XMLin($inputxml)->{Node};
+    return $nodeinfo;
+}
+
+################################################################################
+### get_job_data: Retrieve full list of job XML and put into a database (hash)
+sub get_job_data
+{
+    my $jobinfo;
+    my $inputxml;
+    my $xml = new XML::Simple;
+
+    ### Get information on jobs
+    if ( defined($options{jobinfo}) )
+    {
+        open(INPUTFILE, sprintf("<%s",$options{jobinfo})) or die 
+            "Unable to open file " . $options{jobinfo};
+        local $/;
+        $inputxml = <INPUTFILE>;
+        close INPUTFILE;
+    }
+    else
+    {
+        my $exe = $options{torquebin} . '/qstat -x';
+        $inputxml=`$exe`;
+    }
+    $jobinfo = $xml->XMLin($inputxml)->{Job};
+    return $jobinfo;
+}
+
+################################################################################
+### digest_node_data: Process the node db into structured data
+sub digest_node_data
+{
+    my $nodeinfo = shift;
+    my $jobinfo = shift;
+    ### Process pbsnodes entries into more-usable entries
+    foreach my $node_name ( keys(%{$nodeinfo}) )
+    {
+        my $node = $nodeinfo->{$node_name};
+
+        $node->{name} = $node_name;
+
+        ### Convert 'status' entries into multiple parameters
+        if ( defined( $node->{status} ) )
+        {
+            my $old_status = ',' . $node->{status};
+            my @temp = split(m/,([^\s]+?)=/, $old_status);
+            my $status_parts;
+            shift(@temp);
+            $status_parts = { @temp };
+            $node->{status} = $status_parts;
+
+            ### Convert totmem/availmem/physmem into bytes
+            foreach my $memtype ( qw/physmem totmem availmem/ )
+            {
+                if ( defined($status_parts->{$memtype}) 
+                &&   $status_parts->{$memtype} =~ m/(\d+)kb/ )
+                {
+                     $status_parts->{$memtype} = $1 * 1024;
+                }
+            }
+        }
+
+        ### Add rack/slot numbers (for sorting)
+        if ( $node_name =~ m/^\w+-(\d+)-(\d+)$/ )
+        {
+            ($node->{rack}, $node->{rackslot}) = ($1, $2);
+        }
+
+        ### Figure out how many jobs/ranks are running on a node
+        # my @job_tags = split(m/,?\s+/, $node->{jobs});
+        attach_jobs_to_node( $jobinfo, $node );
+        if ( defined($node->{jobs}) )
+        {
+            foreach my $job_id ( keys(%{$node->{jobs}}) )
+            {
+                $node->{n_ranks} += $node->{jobs}->{$job_id};
+            }
+            $node->{n_jobs} = scalar(keys(%{$node->{jobs}}));
+        }
+        else
+        {
+            $node->{n_jobs} = 0;
+            $node->{n_ranks} = 0;
+        }
+
+        ### Turn properties into a list
+        if ( defined($node->{properties}) )
+        {
+            $node->{properties} = [ split(m/,/, $node->{properties}) ];
+        }
+        if ( grep(!m/^shared$/, @{$node->{properties}} ) )
+        {
+            push(@{$node->{properties}}, 'shared') if is_shared_node( $node );
+        }
+
+        if ( defined($node->{state}) )
+        {
+            $node->{state} = [ split(m/,/, $node->{state}) ];
+            # We don't care about job-exclusive or free states
+            my @rm;
+            for my $i ( 0 .. $#{$node->{state}} )
+            {
+                push(@rm, $i) if $node->{state}->[$i] eq 'job-exclusive' 
+                ||   $node->{state}->[$i] eq 'free';
+            }
+            foreach my $i ( @rm )
+            {
+                splice(@{$node->{state}}, $i, 1);
+            }
+        }
+    }
+
+    ### Synthesize information: calculate node slot consumption, node warnings
+    foreach my $node_name ( keys(%{$nodeinfo}) )
+    {
+        my $node = $nodeinfo->{$node_name};
+
+        $node->{n_slots} = $node->{np} / $options{slotsize};
+        $node->{slots_used} = 0;
+
+        if ( is_shared_node( $node ) )
+        {
+            # need to count up mpi ranks from each job on node
+            foreach my $job ( @{$node->{joblist}} )
+            {
+                $node->{slots_used} += $job->{Resource_List}->{ppn} / 
+                    $options{slotsize};
+            }
+        }
+        else    # n_jobs should always be =1 on exclusive nodes
+        {
+            $node->{slots_used} = $node->{n_slots} * $node->{n_jobs};
+        }
+
+        ### is a node overprescribed?  empty nodes with OS noise don't count
+        if ( defined($node->{status}) )
+        {
+            my $node_status = $node->{status};
+            $node_status->{warnings} = "";
+
+            if ( $node_status->{loadave} > (1.1 * $node->{np})
+            &&   $node_status->{loadave} > 0.25 )
+            {
+                $node_status->{warnings} .= "," 
+                    unless $node_status->{warnings} eq "";
+                $node_status->{warnings} .= "overload";
+            }
+            elsif ( $node_status->{loadave} > 
+                    (1.1 * int($node->{slots_used}) * $options{slotsize}) )
+            {
+                $node_status->{warnings} .= "," 
+                    unless $node_status->{warnings} eq "";
+                $node_status->{warnings} .= "overpresc";
+            }
+        }
+        else
+        {
+            $node->{status}->{warnings} = "";
+        }
+    }
+    return;
+}
+
+################################################################################
+### digest_job_data: Convert job array into hash, keyed according to Job_Id
+sub digest_job_data
+{
+    my $temp;
+    foreach ( @$jobinfo )
+    {
+        my $key = $_->{Job_Id};
+
+        die "Null jobid!" if !defined($key);
+        die "Duplicate job ID $key; aborting" if defined($temp->{$key});
+
+        $temp->{$key} = $_;
+    }
+    $jobinfo = $temp;
+
+    ### Process job list
+    foreach my $jobid ( keys(%{$jobinfo}) )
+    {
+        my $this_job = $jobinfo->{$jobid};
+
+        ### parse requested resources
+        if ( defined($this_job->{Resource_List}) )
+        {
+            my @node_properties = split(m/:/, $this_job->{Resource_List}->{nodes});
+            shift(@node_properties);
+
+            $this_job->{Resource_List}->{nodes} = \@node_properties;
+
+            my ($hr, $min, $sec) = 
+                split(m/:/, $this_job->{Resource_List}->{walltime});
+            $this_job->{Resource_List}->{walltimesec} =
+              $hr * 3600 + $min * 60 + $sec;
+
+            foreach ( @node_properties )
+            {
+                if ( $_ =~ m/ppn=(\d+)/ )
+                {
+                    $this_job->{Resource_List}->{ppn} = $1;
+                }
+            }
+        }
+
+        ### arithmetic on used resources
+        if ( defined($this_job->{resources_used}) )
+        {
+            if ( $this_job->{resources_used}->{mem} =~ m/^(\d+)kb$/ )
+            {
+                $this_job->{resources_used}->{mem} = $1 * 1024;
+            }
+            if ( $this_job->{resources_used}->{vmem} =~ m/^(\d+)kb$/ )
+            {
+                $this_job->{resources_used}->{vmem} = $1 * 1024;
+            }
+            for ( qw/ cput walltime / )
+            {
+                my ($hr, $min, $sec) = 
+                    split(m/:/, $this_job->{resources_used}->{$_});
+                $this_job->{resources_used}->{$_ . 'sec'} =
+                  $hr * 3600 + $min * 60 + $sec;
+            }
+        }
+        else
+        {
+            $this_job->{resources_used}->{cput} = "00:00:00";
+            $this_job->{resources_used}->{cputsec} = 0;
+            $this_job->{resources_used}->{mem} = 0;
+            $this_job->{resources_used}->{vmem} = 0;
+            $this_job->{resources_used}->{walltime} = "00:00:00";
+            $this_job->{resources_used}->{walltimesec} = 0;
+        }
+
+        ### calculate the remaining time on the job
+        # Walltime->Remaining is a mystery (it is not walltime remaining...)
+        if ( defined($this_job->{resources_used}) 
+        &&   defined($this_job->{Resource_List}) )
+        {
+            my $rem = $this_job->{Resource_List}->{walltimesec}
+                - $this_job->{resources_used}->{walltimesec};
+            my ($hrs, $mins, $secs);
+            $hrs = int($rem / 3600);
+            $mins = int(int($rem % 3600) / 60);
+            $secs = $rem % 60;
+    
+            $this_job->{Walltime}->{Remaining} = sprintf( "%02d:%02d:%02d",
+                $hrs, $mins, $secs );
+            $this_job->{Walltime}->{RemainingSec} = $rem;
+        }
+
+    }
+    return;
+}
+
+################################################################################
+### print_node_list: Print all (or a subset of) nodes on cluster
+sub print_node_list
+{
+    my $nodeinfo = shift;
+
+    ### Display nodes sorted nodes by rack, then rack slot
+    my @node_list = sort 
+    {
+        $nodeinfo->{$a}->{rack} <=> $nodeinfo->{$b}->{rack} 
+        || $nodeinfo->{$a}->{rackslot} <=> $nodeinfo->{$b}->{rackslot} 
+    } ( keys(%$nodeinfo) );
+
+    print_node() if !$options{quiet};
+
+    ### Print status messages from node (optional)
+    my $sum = {};
+    foreach my $node_name ( @node_list )
+    {
+        my $node = $nodeinfo->{$node_name};
+
+        next if defined($options{overloads})
+        && !($node->{status}->{warnings} =~ m/overload/);
+
+        next if defined($options{shownodes})
+        &&  !(grep(m/^$node_name$/, @{$options{shownodes}}));
+
+        next if defined($options{showstate})
+        &&  !(grep { $_ eq $options{showstate} } @{$node->{state}});
+
+        if ( defined($options{showproperties}) )
+        {
+            my $success = 0;
+            foreach ( @{$node->{properties}} )
+            {
+                $success = 1 if $options{showproperties} eq $_;
+            }
+            next unless $success != 0;
+        }
+
+        print_node( $node ) if !$options{quiet};
+        add_node_to_stats( $node, $sum );
+        add_job_to_stats( $_, $sum ) foreach @{$node->{joblist}};
+    }
+
+    if ( $options{summary} )
+    {
+        print "\n";
+        print_summary($sum);
+    }
+
+    return;
+}
+
+################################################################################
+### print_job_list: Print a list of all jobs known to the resource manager
+sub print_job_list
+{
+    my $jobinfo = shift;
+
+    print_job();
+    foreach ( sort{ $a cmp $b } ( keys(%{$jobinfo}) ) )
+    {
+        print_job( $jobinfo->{$_} ) if $jobinfo->{$_}->{job_state} eq "R";
+    }
+
+    foreach ( sort{ $a cmp $b } ( keys(%{$jobinfo}) ) )
+    {
+        print_job( $jobinfo->{$_} ) if $jobinfo->{$_}->{job_state} eq "Q";
+    }
+
+    foreach ( sort{ $a cmp $b } ( keys(%{$jobinfo}) ) )
+    {
+        print_job( $jobinfo->{$_} ) if $jobinfo->{$_}->{job_state} eq "E";
+    }
+
+    foreach ( sort{$jobinfo->{$a}->{job_state} cmp $jobinfo->{$b}->{job_state}}
+        ( keys(%{$jobinfo}) ) )
+    {
+        if ( $jobinfo->{$_}->{job_state} =~ m/^[^RQE]$/ )
+        {
+            print_job( $jobinfo->{$_} ) 
+        }
+    }
+    return;
+}
+
+################################################################################
+### print_summary: Provide summary of an accumulator
+sub print_summary
+{
+    my $sum = shift or die "Passed a bad accumulator";
+    my @buffer;
+    $sum->{n_nodes_down} = 0 if !$sum->{n_nodes_down};
+
+    push(@buffer, sprintf("%-13s: %5d\n", 'Total nodes', $sum->{n_nodes}));
+    push(@buffer, sprintf("%-13s: %5d\n",   'Total cores', $sum->{np}));
+    push(@buffer, sprintf("%-13s: %5d\n",   'Total jobs', $sum->{n_jobs}));
+    push(@buffer, sprintf("%-13s: %5d\n",   'Total ranks', $sum->{n_ranks}));
+    push(@buffer, sprintf("%-13s: %5.1f\n", 'Total load', $sum->{loadave}));
+
+    push(@buffer, sprintf("%-17s: %6d/%6d (%5.1f%%)\n",
+        'Node Availability',
+        $sum->{n_nodes_total} - $sum->{n_nodes_down}, 
+        $sum->{n_nodes_total},
+        100 * ($sum->{n_nodes_total} - $sum->{n_nodes_down}) 
+            / $sum->{n_nodes_total}));
+    push(@buffer, sprintf("%-17s: %6.1f/%6d (%5.1f%%)\n",
+        'CPU Utilization', 
+        $sum->{loadave}, $sum->{np},
+        100 * $sum->{loadave} / $sum->{np}));
+    push(@buffer, sprintf("%-17s: %6d/%6d (%5.1f%%)\n", 
+        'Core Utilization', 
+        $sum->{n_ranks}, $sum->{np},
+        100 * $sum->{n_ranks} / $sum->{np}));
+    push(@buffer, sprintf("%-17s: %6d/%6d (%5.1f%%)\n", 
+        'Slot Utilization', 
+        $sum->{slots_used}, $sum->{n_slots},
+        100 * $sum->{slots_used} / $sum->{np} * $options{slotsize}));
+    push(@buffer, sprintf("%-17s: %4.1fTB/%4.1fTB (%5.1f%%)\n",   'Mem Utilization', 
+        ($sum->{physmem} - $sum->{availmem})/BYTE_TO_GBYTE/1024, 
+        $sum->{physmem}/BYTE_TO_GBYTE/1024, 
+        100 * (1 - $sum->{availmem} / $sum->{physmem}) ));
+
+    if ( $options{format} eq 'html' )
+    {
+        my @new_buffer;
+        my $printed_mid_header = 0;
+        foreach my $line ( @buffer )
+        {
+            if ( $line =~ m/Total / )
+            {
+                my @cell = split(m/:/, $line);
+                push( @new_buffer,
+                    sprintf( "<tr><td>%s</td>"
+                           . "<td colspan='3'>%s</td></tr>\n",
+                        $cell[0],
+                        $cell[1] ) );
+            }
+            elsif ( $line =~ m/:/ )
+            {
+                if ( !$printed_mid_header )
+                {
+                    push(@new_buffer,
+                        "<tr>\n"
+                      . "  <td>&nbsp;</td>\n"
+                      . "  <td>Current</td>\n"
+                      . "  <td>Max</td>\n"
+                      . "  <td>%</td>\n"
+                      . "</tr>\n" );
+                    $printed_mid_header++;
+                }
+                my @cell = split(m/\s*[:\/\)\(]\s*/, $line);
+                push( @new_buffer,
+                    sprintf( "<tr>\n"
+                           . "  <td>%s</td>\n"
+                           . "  <td>%s</td>\n"
+                           . "  <td>%s</td>\n"
+                           . "  <td>%s</td>\n"
+                           . "</tr>\n",
+                        $cell[0],
+                        $cell[1],
+                        $cell[2],
+                        $cell[3]
+                        ) );
+            }
+            else
+            {
+                push( @new_buffer, $line );
+            }
+        }
+        @buffer = @new_buffer;
+    }
+    print @buffer;
+    return;
+}
+
+################################################################################
+### print_node: Subroutine to print a single node's information
+sub print_node
+{
+    my @print_params;
+    my $head_format =
+            "%-14s %4s %4s %4s  %7s  %7s %7s %7s %-15.15s\n";
+    my $print_format = 
+            "%-14s %4d %4d %4d  %7s  %6.1fG %6.1f%% %7.2f %-15.15s\n";
+
+    # For building html tables, need to know how many columns there are for
+    # reasons of using "colspan."  Currently used for printing messages, but
+    # not jobs (yet)
+    my $ncols = -1;
+    if ( $options{format} eq 'html' )
+    {
+        my @cols = split(m/\s+/, $print_format);
+        $ncols = scalar( @cols );
+        my $new_head_format = "<tr>\n";
+        my $new_print_format = "<tr>\n";
+
+        # convert the format strings into html
+        foreach my $col ( @cols )
+        {
+            my @characters = split( m//, $col );
+            my $symbol = $col;
+            if ( $characters[-1] eq 's' ) { $symbol = '%s'; }
+            $new_head_format  .= '  <td>%s</td>' . "\n";
+            $new_print_format .= sprintf("  <td>%s</td>\n", $symbol );
+        }
+        $new_head_format  .= "</tr>\n";
+        $new_print_format .= "</tr>\n";
+
+        $head_format = $new_head_format;
+        $print_format =  $new_print_format;
+    }
+
+    my $node = shift;
+    if ( !defined($node) )
+    {
+        if ( $options{format} eq 'html' )
+        {
+            printf( $head_format, 'Node', 'Jobs', 'Ranks', 'CPUs', 'Slots', 
+            'Total<br/>Memory', '% Mem<br/>Used', 'Average<br/>Load', 
+            'State' );
+        }
+        else
+        {
+            printf( $head_format, 'node', 'jobs', 'rnks', 'cpus', 'slots', 
+            'totmem', '%memuse', 'avgload', 'state' );
+        }
+        return;
+    }
+    my $node_status = $node->{status};
+
+    if ( !defined($node->{state}) )
+    {
+        warn sprintf("Node %s has status but no state", $node->{name});
+        warn Dumper($node);
+    }
+
+    ### downed nodes report very little useful information
+    if ( !defined($node_status->{state})
+    ||   grep { m/down/ } ( $node_status->{state} ) )
+    {
+        my $slotstring = sprintf("%d/%d", 
+            0, $node->{n_slots});
+        @print_params = ( 
+            $node->{name}, 
+            $node->{n_jobs}, $node->{n_ranks}, $node->{np},
+            $slotstring,
+            0, 0, 0, 
+            ( $options{format} eq 'html'
+                ? join( "<br/>", @{$node->{state}} ) 
+                : join( ",", @{$node->{state}} )) );
+    }
+    else
+    {
+        my @state = ( @{$node->{state}}, split(m/,/, $node_status->{warnings}) );
+        my $slotstring = sprintf("%d/%d", 
+            $node->{slots_used}, $node->{n_slots});
+        @print_params = ( 
+            $node->{name}, 
+            $node->{n_jobs}, $node->{n_ranks}, $node->{np},
+            $slotstring,
+            $node_status->{physmem}/BYTE_TO_GBYTE,
+            100 * (1 - $node_status->{availmem}/$node_status->{totmem}),
+            $node_status->{loadave},
+            ( $options{format} eq 'html'
+                ? join( "<br/>", @state )
+                : join( ",", @state ) ) );
+    }
+
+    ### print this node's line (in red if major abnormality detected)
+    if ( grep(m/(offline|down)/, @{$node->{state}}) )
+    {
+        if ( $options{format} eq 'html' )
+        {
+             my $style = 'color:#FF0000; font-weight:bolder';
+             $print_format =~ s@td>([^<]+)</td@td><span style="$style">$1</span></td@g;
+             printf( $print_format, @print_params );
+        }
+        else
+        {
+            print color 'bold red';
+            printf( $print_format, @print_params );
+            print color 'reset';
+        }
+    }
+    elsif ( $node_status->{warnings} =~ m/overload/ )
+    {
+        if ( $options{format} eq 'html' )
+        {
+             my $style = 'color:#999900; font-weight:bolder';
+             $print_format =~ s@td>([^<]+)</td@td><span style="$style">$1</span></td@g;
+             printf( $print_format, @print_params );
+        }
+        else
+        {
+            print color 'bold yellow';
+            printf( $print_format, @print_params );
+            print color 'reset';
+        }
+    }
+    else
+    {
+        printf( $print_format, @print_params );
+    }
+
+    if ( $options{messages}
+    &&   defined($node_status) 
+    &&   defined($node_status->{message}) )
+    {
+        print "<tr><td colspan='$ncols'>"   if $options{format} eq 'html';
+        print $node_status->{message} . "\n";
+        print "</td></tr>\n"                if $options{format} eq 'html';
+    }
+
+    if ( $options{full} )
+    {
+        print_job( $_, $ncols ) foreach @{$node->{joblist}} 
+    }
+}
+
+################################################################################
+### print_job: Subroutine to print a single job's information
+sub print_job
+{
+    my %states = ( "R" => "Running",    "Q" => "Queued",
+                   "H" => "Held",       "E" => "Exiting",
+                   "C" => "Cmpletd",    "T" => "Transfr",
+                   "W" => "Waiting",    "S" => "Suspend" );
+
+    my $head_format = "%9s %7s %5s %-12s %-12.12s %12s %4s %10s\n";
+    my $print_format = "%9d %7s %5d %-12s %-12.12s %12s %3d%% %10s\n";
+    my $job = shift;
+    my $ncols = shift;  # printing jobs in html format currently not implemented
+
+    if ( !defined($job) )
+    {
+        printf( $head_format,
+            "JobID",
+            "State",
+            "#Nods",
+            "User",
+            "JobName",
+            "WallReq",
+            '%fin',
+            'Queue');
+    }
+    else
+    {
+        printf( $print_format,
+            (split(m/\./, $job->{Job_Id}))[0],
+            ( defined($states{$job->{job_state}}) 
+                ? $states{$job->{job_state}} 
+                : "??? - " . $job->{job_state} ),
+            $job->{Resource_List}->{nodect},
+            (split(m/@/, $job->{Job_Owner}))[0],
+            $job->{Job_Name},
+            $job->{Resource_List}->{walltime},
+            int(100 * $job->{resources_used}->{walltimesec}
+                / $job->{Resource_List}->{walltimesec}),
+            $job->{queue});
+    }
+}
+
+################################################################################
+### attach_nodes_to_job: Join the nodes db to a job
+sub attach_nodes_to_job
+{
+    my $nodeinfo = shift;
+    my $job = shift;
+
+    return if $job->{node_list};
+    if ( defined($job->{exec_host}) )
+    {
+        my @cores = split(m/\+/, $job->{exec_host});
+        my %cores_in_use;
+    
+        foreach ( @cores )
+        {
+            my $node_name;
+            if ( $_ =~ m/^(.*)\/\d+$/ )
+            {
+                $node_name = $1;
+                $cores_in_use{$node_name}++;
+            }
+        }
+        $job->{core_counts} = \%cores_in_use;
+        push(@{$job->{node_list}}, $nodeinfo->{$_})
+            foreach keys(%cores_in_use);
+    }
+    return;
+}
+
+################################################################################
+### attach_jobs_to_node: Join the jobs db to a node
+sub attach_jobs_to_node
+{
+    my $jobinfo = shift;
+    my $node = shift;
+
+    if ( defined($node->{jobs}) )
+    {
+        return if ref($node->{jobs}) eq 'HASH'; # data already processed
+        my %job_ranks;
+        my @job_tags = split(m/,?\s+/, $node->{jobs});
+        foreach ( @job_tags )
+        {
+            die "Garbled jobs field $_" unless ( $_ =~ m/^\d+\/(\S+)$/ );
+            $job_ranks{$1}++;
+        }
+        $node->{jobs} = \%job_ranks;
+
+        foreach ( keys(%{$node->{jobs}}) )
+        {
+            if ( defined($jobinfo->{$_}) )
+            {
+                push(@{$node->{joblist}}, $jobinfo->{$_});
+            }
+            else
+            {
+                warn "No jobinfo for job $_";
+            }
+        }
+    }
+    return;
+}
+
+################################################################################
+### add_job_to_stats: Tally job metrics to an accumulator structure
+sub add_job_to_stats
+{
+    my $job = shift or return;
+    my $accumulator = shift;
+
+    $accumulator->{n_jobs}++ if $job->{job_state} eq "R";
+    # todo: add more job stats
+    return;
+}
+
+################################################################################
+### add_node_to_stats: Tally node metrics to an accumulator structure
+sub add_node_to_stats
+{
+    my $node = shift or return;
+    my $accumulator = shift;
+
+    if ( defined($node->{status}->{state})
+    &&  !grep { m/down/ } ( $node->{status}->{state} ) )
+    {
+        $accumulator->{$_} += $node->{$_} 
+            foreach (qw/n_ranks np n_slots slots_used/);
+        $accumulator->{$_} += $node->{status}->{$_} 
+            foreach ( qw/ loadave physmem availmem / );
+        $accumulator->{n_nodes}++;
+    }
+    $accumulator->{n_nodes_total}++;
+    $accumulator->{n_nodes_down}++ if grep(m/(offline|down)/, 
+                                        @{$node->{state}});
+    return;
+}
+
+################################################################################
+### is_shared_node: simple check to determine if a node qualifies as being 
+###   "shared" since Catalina uses floating reservations for shared nodes
+sub is_shared_node
+{
+    my $node = shift;
+    my $job = shift;
+
+    return 1 if grep(m/^vsmp$/, @{$node->{properties}});
+
+    ### nodes are shared if they contain jobs from the shared queue
+    foreach ( @{$node->{joblist}} )
+    {
+        return 1 if $_->{queue} eq 'shared';
+    }
+
+    ### default are exclusive nodes
+    return 0;
+}
