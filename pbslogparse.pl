@@ -22,7 +22,7 @@ if ( @ARGV > 0 )
 my $job_list = load_job_list_from_logs();
 if ( defined($options{fields}) )
 {
-    @{$options{fields}} = split(m/,/,join(',',@{$options{fields}}))
+    @{$options{fields}} = split(m/,/,join(',',@{$options{fields}}));
     print_fields();
 }
 # otherwise, print out something useful (like user expansion factors)
