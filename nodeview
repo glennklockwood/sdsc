@@ -40,6 +40,16 @@ $options{format} = 'table' if !defined($options{format});
 @{$options{shownodes}} = split(m/,/,join(',',@{$options{shownodes}}))
     if defined($options{shownodes});
 
+### Parse shownodes option (if specified)
+@{$options{showjobnodes}} = split(m/,/,join(',',@{$options{showjobnodes}}))
+    if defined($options{showjobnodes});
+
+if ( $options{'brief-summary'} )
+{
+    $options{quiet} = 1;
+    $options{summary} = 1;
+}
+
 ################################################################################
 ### Read in and process all of the data.  Populate the following databases:
 ###   nodeinfo: contains all nodes, keyed by node name
@@ -67,6 +77,25 @@ if ( $options{summary} )
 ### data is never actually used.
 attach_nodes_to_job( $nodeinfo, $jobinfo->{$_} )
     foreach keys(%{$jobinfo});
+
+### Show all nodes participating in a given job or jobs.  APPENDS to the list
+### of nodes given by --node=
+if ( $options{showjobnodes} )
+{
+    foreach my $jobname ( keys(%$jobinfo) )
+    {
+        foreach my $showjob( @{$options{showjobnodes}} )
+        {
+            if ( $jobname =~ m/^$showjob\./ )
+            {
+                push( @{$options{shownodes}}, $_ )
+                    foreach keys( %{$jobinfo->{$jobname}->{node_list}} );
+            }
+        }
+    }
+    die "-j specified, but no matching jobs found!\n"
+        unless $options{shownodes};
+}
 
 ################################################################################
 ### Output list of requested information
@@ -107,8 +136,14 @@ sub get_options
         # include usage summary at end (default:off)
             "summary"       => \$options{summary},   
 
+        # print a single-line summary (default:off)
+            "brief-summary" => \$options{'brief-summary'},   
+
         # show only certain nodes (default:show all)
             "n|node=s@"     => \$options{shownodes},   
+
+        # show nodes associated with certain jobs (default:all)
+            "j|job=s@"      => \$options{showjobnodes},
 
         # show only nodes with given property (default:show all)
             "p|properties=s"=> \$options{showproperties}, 
@@ -541,7 +576,25 @@ sub print_summary
         $sum->{physmem}/BYTE_TO_GBYTE/1024, 
         100 * (1 - $sum->{availmem} / $sum->{physmem}) ));
 
-    if ( $options{format} eq 'html' )
+    if ( $options{'brief-summary'} )
+    {
+        @buffer = ();
+        push(@buffer,
+        sprintf( "%d %d %d %d %f   %d %d  %f %d  %d %d  %d %d  %f %f\n",
+            $sum->{n_nodes},
+            $sum->{np},
+            $sum->{n_jobs},
+            $sum->{n_ranks},
+            $sum->{loadave},
+            $sum->{n_nodes_total} - $sum->{n_nodes_down},
+            $sum->{n_nodes_total},
+            $sum->{loadave}, $sum->{np},
+            $sum->{n_ranks}, $sum->{np},
+            $sum->{slots_used}, $sum->{n_slots},
+            ($sum->{physmem} - $sum->{availmem})/BYTE_TO_GBYTE/1024,
+            $sum->{physmem}/BYTE_TO_GBYTE/1024 ) );
+    }
+    elsif ( $options{format} eq 'html' )
     {
         my @new_buffer;
         my $printed_mid_header = 0;
@@ -804,7 +857,8 @@ sub attach_nodes_to_job
             }
         }
         $job->{core_counts} = \%cores_in_use;
-        push(@{$job->{node_list}}, $nodeinfo->{$_})
+#       push(@{$job->{node_list}}, $nodeinfo->{$_})
+        $job->{node_list}->{$_} = $nodeinfo->{$_}
             foreach keys(%cores_in_use);
     }
     return;
