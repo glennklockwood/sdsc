@@ -99,10 +99,12 @@ if ( $options{showjobnodes} )
 
 ################################################################################
 ### Output list of requested information
-print_job_list($jobinfo) if $options{jobview};
-
-### Print the cluster-level summary if not printing node list
-if ( $options{quiet} )
+if ( $options{jobview} )
+{
+    print_job_list($jobinfo) 
+}
+### Print the cluster-level summary if not printing joblist
+elsif ( $options{quiet} )
 {
     print_summary($clusterinfo) if $options{summary};
 }
@@ -350,6 +352,14 @@ sub digest_node_data
                     unless $node_status->{warnings} eq "";
                 $node_status->{warnings} .= "overpresc";
             }
+
+            if ( $node_status->{availmem}/$node_status->{totmem} < 0.1 )
+            {
+                $node_status->{warnings} .= "," 
+                    unless $node_status->{warnings} eq "";
+                $node_status->{warnings} .= "lowmem";
+            }
+
         }
         else
         {
@@ -756,7 +766,7 @@ sub print_node
             print color 'reset';
         }
     }
-    elsif ( $node_status->{warnings} =~ m/overload/ )
+    elsif ( $node_status->{warnings} =~ m/(overload|lowmem)/ )
     {
         if ( $options{format} eq 'html' )
         {
