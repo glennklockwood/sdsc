@@ -11,36 +11,83 @@ use Sys::Hostname;
 my @exempt_users = qw/root catalina/;
 # threshold for reporting a hot pid
 my $min_pcpu = 10.0;
+my $min_time = 600;
 
 my @process_list;
 for my $line ( `/bin/ps -e -o pid= -o user= -o pcpu= -o rss= -o vsz= -o etime= -o time= -o cmd=` )
 {
     $line =~ s/(^\s+|\s+$)//;
     my @field = split( m/\s+/, $line );
-    push( @process_list, {
-        'pid'   => $field[0],
-        'user'  => $field[1],
-        'pcpu'  => $field[2],
-        'rss'   => $field[3],
-        'vsz'   => $field[4],
-        'etime' => stamp_to_secs($field[5]),
-        'time'  => stamp_to_secs($field[6]),
-        'cmd'   => ($field[8] ? join(' ', @field[7,-1]) : $field[7]) });
 
+    my %hash;
+    my $argument = $line;
+    for my $key ( qw/ pid user pcpu rss vsz etime time/ )
+    {
+        my $word;
+        ( $word, $argument ) = one_arg( $argument );
+        $hash{$key} = $word;
+    }
+    
+    $hash{etime} = stamp_to_secs($hash{etime});
+    $hash{'time'}  = stamp_to_secs($hash{'time'});
+    $hash{cmd}   = $argument;
+    push( @process_list, \%hash );
 }
 
 my @print_processes;
+my %user_load;
+#
+#   first pass - look for individual processes AND add up overall user load
+#
 foreach my $p ( @process_list )
 {
-    if ( $p->{pcpu} > $min_pcpu
-    && !grep {$_ eq $p->{user}} @exempt_users ) 
+    next if grep {$_ eq $p->{user}} @exempt_users;
+
+    $user_load{$p->{user}} += $p->{pcpu};
+
+    if ( $p->{pcpu} > $min_pcpu && $p->{etime} > $min_time )
     { 
         push( @print_processes, $p );
     }
 }
 
+#
+#  second pass - print all processes from heavily loaded users regardless fo
+#     runtime
+#
+my $buffer = "";
+my $hot_users = 0;
+foreach my $user ( keys(%user_load) )
+{
+    my $warning = 0;
+    foreach my $p ( @process_list )
+    {
+        next unless $p->{user} eq $user;
+
+        if ( $user_load{$user} > 100.0 
+        &&   $p->{pcpu} > $min_pcpu/10
+        &&   !grep { $_ == $p } @print_processes )
+        {
+            push(@print_processes, $p);
+            $warning++;
+        }
+    }
+    if ( $warning )
+    {
+        $buffer .= sprintf( "\t%s\t%.1f%%\n", $user, $user_load{$user});
+        $hot_users++;
+    }
+}
+
+#
+#  print offending processes
+#
 if ( scalar(@print_processes) > 0 )
 {
+    if ( $hot_users ) {
+        printf( "Hot users on %s:\n", hostname() );
+        print $buffer;
+    }
     printf( "Hot processes on %s:\n", hostname() );
     print_pid($_) foreach @print_processes;
 }
@@ -60,6 +107,10 @@ sub stamp_to_secs
     {
         ( $days, $hours, $minutes, $seconds ) = ( 0, $1, $2, $3 );
     }
+    elsif ( $stamp =~ m/(\d+):(\d+)/ )
+    {
+        ( $days, $hours, $minutes, $seconds ) = ( 0, 0, $1, $2 );
+    }
     else
     {
         return -1;
@@ -74,7 +125,7 @@ sub stamp_to_secs
 sub print_pid
 {
     my $p = shift;
-    my $fmt = "%5d\t%s\t%.1f%%\t%.1f hr\t%s\n";
+    my $fmt = "%5d\t%s\t%.1f%%\t%.1f hr\t%.45s\n";
 
     printf( $fmt,
         $p->{pid},
@@ -82,4 +133,13 @@ sub print_pid
         $p->{pcpu},
         $p->{etime}/3600.0,
         $p->{cmd} );
+}
+
+sub one_arg
+{
+    my $string = shift;
+    if ( $string =~ m/^\s*(\S+)\s*(.*)$/ )
+    {
+        return ( $1, $2 );
+    }
 }
