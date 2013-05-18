@@ -19,10 +19,8 @@ BEGIN
         use lib "/home/glock/perl/lib/perl5/site_perl";
     }
 }
-use XML::Simple;
 use Data::Dumper;
 use Term::ANSIColor;
-use Getopt::Long;
 
 use constant BYTE_TO_GBYTE => 1024*1024*1024;
 
@@ -35,6 +33,7 @@ die "Full job display not compatible with html output" if $options{html}
 $options{slotsize} = 1 if !defined($options{slotsize});
 $options{torquebin} = '/opt/torque/bin' if !defined($options{torquebin});
 $options{format} = 'table' if !defined($options{format});
+$options{showstate} = 'overloads' if defined($options{overloads});
 
 ### Parse shownodes option (if specified)
 @{$options{shownodes}} = split(m/,/,join(',',@{$options{shownodes}}))
@@ -57,26 +56,39 @@ if ( $options{'brief-summary'} )
 ###   clusterinfo: contains basic statistical info on all nodes and jobs
 my ( $nodeinfo, $jobinfo, $clusterinfo ) = ( {}, {}, {} );;
 
-$jobinfo = get_job_data( );
-digest_job_data( $jobinfo );
-
-$nodeinfo = get_node_data ( );
-digest_node_data( $nodeinfo, $jobinfo );
-
-### Collect cluster-level data only if we need to present it
-if ( $options{summary} )
+### either read in a cached db
+if ( $options{readdb} )
 {
-    add_node_to_stats( $nodeinfo->{$_}, $clusterinfo ) 
-        foreach keys(%{$nodeinfo});
+    ( $nodeinfo, $jobinfo, $clusterinfo ) = read_db( $options{readdb} );
+}
+### or generate (read and synthesize) a new db
+else
+{
+    $jobinfo = get_job_data( );
+    digest_job_data( $jobinfo );
 
-    add_job_to_stats( $jobinfo->{$_}, $clusterinfo )
-        foreach keys(%{$jobinfo});
+    $nodeinfo = get_node_data ( );
+    digest_node_data( $nodeinfo, $jobinfo );
+
+    ### Collect cluster-level data only if we need to present it
+    if ( $options{summary} || $options{writedb} )
+    {
+        add_node_to_stats( $nodeinfo->{$_}, $clusterinfo ) 
+            foreach keys(%{$nodeinfo});
+
+        add_job_to_stats( $jobinfo->{$_}, $clusterinfo )
+            foreach keys(%{$jobinfo});
+    }
+
+    ### Loop over all jobs to attach node info.  As of May 10, 2013, this 
+    ### connected data is never actually used.
+    attach_nodes_to_job( $nodeinfo, $jobinfo->{$_} ) foreach keys(%{$jobinfo});
 }
 
-### Loop over all jobs to attach node info.  As of May 10, 2013, this connected
-### data is never actually used.
-attach_nodes_to_job( $nodeinfo, $jobinfo->{$_} )
-    foreach keys(%{$jobinfo});
+### write out the generated db
+write_db( $nodeinfo, $jobinfo, $clusterinfo, $options{writedb} ) 
+    if $options{writedb};
+
 
 ### Show all nodes participating in a given job or jobs.  APPENDS to the list
 ### of nodes given by --node=
@@ -119,6 +131,7 @@ else ### if node list is being printed, it will print a summary of printed nodes
 ### get_options: parse command line options
 sub get_options
 {
+    use Getopt::Long;
     my %options;
     if ( @ARGV > 0 ) 
     {
@@ -128,9 +141,6 @@ sub get_options
 
         # show node status messages (default:off)
             "m|messages"    => \$options{messages},  
-
-        # specify jobinfo input (default:qstat -x)
-            "jobinfo=s"     => \$options{jobinfo},   
 
         # show nodes + jobs on nodes (default:off)
             "f|full"        => \$options{full},      
@@ -143,12 +153,8 @@ sub get_options
 
         # show only certain nodes (default:show all)
             "n|node=s@"     => \$options{shownodes},   
-
         # show nodes associated with certain jobs (default:all)
             "j|job=s@"      => \$options{showjobnodes},
-
-        # show only nodes with given property (default:show all)
-            "p|properties=s"=> \$options{showproperties}, 
 
         # number of cores per schedule slot (default:autodetect)
             "slotsize=i"    => \$options{slotsize},
@@ -158,18 +164,26 @@ sub get_options
 
         # show only nodes with given state (default:all states)
             "s|state=s"     => \$options{showstate},
+        # show only nodes with given properties (default:any properties)
+            "p|properties=s"=> \$options{showproperties},
 
         # specify nodeinfo input (default:pbsnodes -x)
             "nodeinfo=s"    => \$options{nodeinfo},  
+        # specify jobinfo input (default:qstat -x)
+            "jobinfo=s"     => \$options{jobinfo},   
 
         # output format: table, html (default:table)
             "format=s"      => \$options{format},
-
         # suppress output of node list (default:off)
             "quiet"         =>  \$options{quiet},
 
         # location of torque binaries(default:/opt/torque/bin)
             "torquebin"     => \$options{torquebin},
+
+        # instead of printing output, write to db (default=do not write db)
+            "writedb=s"     => \$options{writedb},    
+        # instead of generating db, read from file (default=regenerate db)
+            "readdb=s"      =>  \$options{readdb},
         );
     }
     return \%options;
@@ -179,9 +193,9 @@ sub get_options
 ### get_node_data: Retrieve full list of node XML and put into a database (hash)
 sub get_node_data
 {
+    use XML::Simple;
     my $nodeinfo;
     my $inputxml;
-    my $xml = new XML::Simple;
 
     if ( defined($options{nodeinfo}) )
     {
@@ -196,7 +210,7 @@ sub get_node_data
         my $exe = $options{torquebin} . '/pbsnodes -x';
         $inputxml = `$exe`;
     }
-    $nodeinfo = $xml->XMLin($inputxml)->{Node};
+    $nodeinfo = XMLin($inputxml)->{Node};
     return $nodeinfo;
 }
 
@@ -204,9 +218,9 @@ sub get_node_data
 ### get_job_data: Retrieve full list of job XML and put into a database (hash)
 sub get_job_data
 {
+    use XML::Simple;
     my $jobinfo;
     my $inputxml;
-    my $xml = new XML::Simple;
 
     ### Get information on jobs
     if ( defined($options{jobinfo}) )
@@ -222,7 +236,7 @@ sub get_job_data
         my $exe = $options{torquebin} . '/qstat -x';
         $inputxml=`$exe`;
     }
-    $jobinfo = $xml->XMLin($inputxml)->{Job};
+    $jobinfo = XMLin($inputxml)->{Job};
     return $jobinfo;
 }
 
@@ -267,7 +281,6 @@ sub digest_node_data
         }
 
         ### Figure out how many jobs/ranks are running on a node
-        # my @job_tags = split(m/,?\s+/, $node->{jobs});
         attach_jobs_to_node( $jobinfo, $node );
         if ( defined($node->{jobs}) )
         {
@@ -335,35 +348,25 @@ sub digest_node_data
         ### is a node overprescribed?  empty nodes with OS noise don't count
         if ( defined($node->{status}) )
         {
-            my $node_status = $node->{status};
-            $node_status->{warnings} = "";
-
-            if ( $node_status->{loadave} > (1.1 * $node->{np})
-            &&   $node_status->{loadave} > 0.25 )
+            if ( $node->{status}->{loadave} > (1.1 * $node->{np})
+            &&   $node->{status}->{loadave} > 0.25 )
             {
-                $node_status->{warnings} .= "," 
-                    unless $node_status->{warnings} eq "";
-                $node_status->{warnings} .= "overload";
+                push(@{$node->{status}->{warnings}}, 'overload');
             }
-            elsif ( $node_status->{loadave} > 
+            elsif ( $node->{status}->{loadave} > 
                     (1.1 * int($node->{slots_used}) * $options{slotsize}) )
             {
-                $node_status->{warnings} .= "," 
-                    unless $node_status->{warnings} eq "";
-                $node_status->{warnings} .= "overpresc";
+                push(@{$node->{status}->{warnings}}, 'overprescribed');
             }
 
-            if ( $node_status->{availmem}/$node_status->{totmem} < 0.1 )
+            if ( $node->{status}->{availmem}/$node->{status}->{totmem} < 0.1 )
             {
-                $node_status->{warnings} .= "," 
-                    unless $node_status->{warnings} eq "";
-                $node_status->{warnings} .= "lowmem";
+                push(@{$node->{status}->{warnings}}, 'lowmem');
             }
-
         }
         else
         {
-            $node->{status}->{warnings} = "";
+            $node->{status}->{warnings} = [ ];
         }
     }
     return;
@@ -483,24 +486,15 @@ sub print_node_list
     {
         my $node = $nodeinfo->{$node_name};
 
-        next if defined($options{overloads})
-        && !($node->{status}->{warnings} =~ m/overload/);
-
         next if defined($options{shownodes})
         &&  !(grep(m/^$node_name$/, @{$options{shownodes}}));
 
         next if defined($options{showstate})
-        &&  !(grep { $_ eq $options{showstate} } @{$node->{state}});
+        &&  !(grep {$_ eq $options{showstate}} @{$node->{state}})
+        &&  !(grep {$_ eq $options{showstate}} @{$node->{status}->{warnings}});
 
-        if ( defined($options{showproperties}) )
-        {
-            my $success = 0;
-            foreach ( @{$node->{properties}} )
-            {
-                $success = 1 if $options{showproperties} eq $_;
-            }
-            next unless $success != 0;
-        }
+        next if defined($options{showproperties})
+        &&   !(grep {$_ eq $options{showproperties}} @{$node->{properties}});
 
         print_node( $node ) if !$options{quiet};
         add_node_to_stats( $node, $sum );
@@ -717,6 +711,19 @@ sub print_node
         warn sprintf("Node %s has status but no state", $node->{name});
         warn Dumper($node);
     }
+    ### combine node state, status, and warnings into a single string
+    my $state = '';
+    {
+        my @aggregate_state;
+        my $join = ( $options{format} eq 'html' ? "<br/>" : "," );
+        push( @aggregate_state, @{$node->{status}->{warnings}} )
+            if defined($node->{status}->{warnings});
+        push( @aggregate_state, @{$node->{state}} ) 
+            if defined($node->{state});
+#       push( @aggregate_state,  @{$node->{properties}} ) 
+#           if defined(@{$node->{properties}});
+        $state = join( $join, @aggregate_state );
+    }
 
     ### downed nodes report very little useful information
     if ( !defined($node_status->{state})
@@ -729,13 +736,10 @@ sub print_node
             $node->{n_jobs}, $node->{n_ranks}, $node->{np},
             $slotstring,
             0, 0, 0, 
-            ( $options{format} eq 'html'
-                ? join( "<br/>", @{$node->{state}} ) 
-                : join( ",", @{$node->{state}} )) );
+            $state );
     }
     else
     {
-        my @state = ( @{$node->{state}}, split(m/,/, $node_status->{warnings}) );
         my $slotstring = sprintf("%d/%d", 
             $node->{slots_used}, $node->{n_slots});
         @print_params = ( 
@@ -745,9 +749,7 @@ sub print_node
             $node_status->{physmem}/BYTE_TO_GBYTE,
             100 * (1 - $node_status->{availmem}/$node_status->{totmem}),
             $node_status->{loadave},
-            ( $options{format} eq 'html'
-                ? join( "<br/>", @state )
-                : join( ",", @state ) ) );
+            $state );
     }
 
     ### print this node's line (in red if major abnormality detected)
@@ -766,7 +768,7 @@ sub print_node
             print color 'reset';
         }
     }
-    elsif ( $node_status->{warnings} =~ m/(overload|lowmem)/ )
+    elsif ( grep( m/(overload|lowmem)/, @{$node_status->{warnings}} ) )
     {
         if ( $options{format} eq 'html' )
         {
@@ -960,4 +962,32 @@ sub is_shared_node
 
     ### default are exclusive nodes
     return 0;
+}
+
+################################################################################
+### write_db: write the contents of database to a file
+sub write_db
+{
+    use Storable;
+    my $nodeinfo= shift;
+    my $jobinfo = shift;
+    my $clusterinfo = shift;
+    my $filename = shift;
+
+    store( {
+        nodeinfo    => $nodeinfo,
+        jobinfo     => $jobinfo,
+        clusterinfo => $clusterinfo
+    }, $filename );
+    return;
+}
+
+################################################################################
+### read_db: read the contents of a previously generated database
+sub read_db
+{
+    use Storable;
+    my $filename = shift;
+    my $hashref = retrieve($filename);
+    return ($hashref->{nodeinfo}, $hashref->{jobinfo}, $hashref->{clusterinfo});
 }
