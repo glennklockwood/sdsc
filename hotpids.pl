@@ -29,8 +29,8 @@ my @fields = qw/ pid user pcpu rss vsz etime time /;
 #
 # Collect process data
 #
-my $ps_cmd = "/bin/ps -e"
-   $ps_cmd .= " -o $_=" foreach ( @fields )
+my $ps_cmd = "/bin/ps -e";
+   $ps_cmd .= " -o $_=" foreach ( @fields );
    $ps_cmd .= ' -o cmd=';
 my @process_list;
 for my $line ( `$ps_cmd` )
