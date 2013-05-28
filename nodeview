@@ -353,7 +353,8 @@ sub digest_node_data
             {
                 push(@{$node->{status}->{warnings}}, 'overload');
             }
-            elsif ( $node->{status}->{loadave} > 
+            elsif ( $node->{n_jobs} > 0
+            &&      $node->{status}->{loadave} > 
                     (1.1 * int($node->{slots_used}) * $options{slotsize}) )
             {
                 push(@{$node->{status}->{warnings}}, 'overprescribed');
