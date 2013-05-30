@@ -42,6 +42,8 @@ $options{showstate} = 'overloads' if defined($options{overloads});
 ### Parse shownodes option (if specified)
 @{$options{showjobnodes}} = split(m/,/,join(',',@{$options{showjobnodes}}))
     if defined($options{showjobnodes});
+@{$options{showusernodes}} = split(m/,/,join(',',@{$options{showusernodes}}))
+    if defined($options{showusernodes});
 
 if ( $options{'brief-summary'} )
 {
@@ -89,7 +91,6 @@ else
 write_db( $nodeinfo, $jobinfo, $clusterinfo, $options{writedb} ) 
     if $options{writedb};
 
-
 ### Show all nodes participating in a given job or jobs.  APPENDS to the list
 ### of nodes given by --node=
 if ( $options{showjobnodes} )
@@ -108,6 +109,25 @@ if ( $options{showjobnodes} )
     die "-j specified, but no matching jobs found!\n"
         unless $options{shownodes};
 }
+
+### Show all nodes being used by a given user.  Also appends to list of nodes
+if ( $options{showusernodes} )
+{
+    foreach my $jobname ( keys(%$jobinfo) )
+    {
+        foreach my $showuser ( @{$options{showusernodes}} )
+        {
+            if ( $jobinfo->{$jobname}->{Job_Owner} =~ m/^$showuser@/ )
+            {
+                push( @{$options{shownodes}}, $_ )
+                    foreach keys( %{$jobinfo->{$jobname}->{node_list}} );
+            }
+        }
+    }
+    die "-u specified, but no matching user found!\n"
+        unless $options{shownodes};
+}
+
 
 ################################################################################
 ### Output list of requested information
@@ -155,6 +175,8 @@ sub get_options
             "n|node=s@"     => \$options{shownodes},   
         # show nodes associated with certain jobs (default:all)
             "j|job=s@"      => \$options{showjobnodes},
+        # show nodes associated with certain user (default:all)
+            "u|user=s@"     => \$options{showusernodes},
 
         # number of cores per schedule slot (default:autodetect)
             "slotsize=i"    => \$options{slotsize},
@@ -552,18 +574,27 @@ sub print_summary
     my @buffer;
     $sum->{n_nodes_down} = 0 if !$sum->{n_nodes_down};
 
-    push(@buffer, sprintf("%-13s: %5d\n", 'Total nodes', $sum->{n_nodes}));
-    push(@buffer, sprintf("%-13s: %5d\n",   'Total cores', $sum->{np}));
-    push(@buffer, sprintf("%-13s: %5d\n",   'Total jobs', $sum->{n_jobs}));
-    push(@buffer, sprintf("%-13s: %5d\n",   'Total ranks', $sum->{n_ranks}));
-    push(@buffer, sprintf("%-13s: %5.1f\n", 'Total load', $sum->{loadave}));
+    push(@buffer, sprintf("%-13s: %5d\n",   'Total nodes',  $sum->{n_nodes}));
+    push(@buffer, sprintf("%-13s: %5d\n",   'Total cores',  $sum->{np}));
+    push(@buffer, sprintf("%-13s: %5d\n",   'Total jobs',   $sum->{n_jobs}));
+    push(@buffer, sprintf("%-13s: %5d\n",   'Total ranks',  $sum->{n_ranks}));
+    push(@buffer, sprintf("%-13s: %5.1f\n", 'Total load',   $sum->{loadave}));
 
+    # the following sums are counted up over n_nodes nodes (NOT n_nodes_total):
+    #   n_ranks np n_slots slots_used
+    #   loadave physmem availmem totmem
+ 
+    # n_nodes_total = number of nodes reported by pbs
+    # n_nodes_down = number of nodes either offline or down
     push(@buffer, sprintf("%-17s: %6d/%6d (%5.1f%%)\n",
         'Node Availability',
         $sum->{n_nodes_total} - $sum->{n_nodes_down}, 
         $sum->{n_nodes_total},
         100 * ($sum->{n_nodes_total} - $sum->{n_nodes_down}) 
             / $sum->{n_nodes_total}));
+    # the following four utilization quantitites represent all nodes that can
+    # report, offline or online.  downed nodes are not counted because they are
+    # not talking to PBS MOM, but offlined nodes ARE counted
     push(@buffer, sprintf("%-17s: %6.1f/%6d (%5.1f%%)\n",
         'CPU Utilization', 
         $sum->{loadave}, $sum->{np},
@@ -576,11 +607,14 @@ sub print_summary
         'Slot Utilization', 
         $sum->{slots_used}, $sum->{n_slots},
         100 * $sum->{slots_used} / $sum->{np} * $options{slotsize}));
+    # the choice of totmem instead of physmem is not firm
+    #   physmem = total physical memory available
+    #   totmem = total virtual memory available (physmem+swap)
+    #   availmem = total virtual memory not allocated (physical+swap)
     push(@buffer, sprintf("%-17s: %4.1fTB/%4.1fTB (%5.1f%%)\n",   'Mem Utilization', 
-        ($sum->{physmem} - $sum->{availmem})/BYTE_TO_GBYTE/1024, 
-        $sum->{physmem}/BYTE_TO_GBYTE/1024, 
-        100 * (1 - $sum->{availmem} / $sum->{physmem}) ));
-
+        ($sum->{totmem} - $sum->{availmem})/BYTE_TO_GBYTE/1024, 
+        $sum->{totmem}/BYTE_TO_GBYTE/1024, 
+        100 * (1 - $sum->{availmem} / $sum->{totmem}) ));
     if ( $options{'brief-summary'} )
     {
         @buffer = ();
@@ -596,8 +630,8 @@ sub print_summary
             $sum->{loadave}, $sum->{np},
             $sum->{n_ranks}, $sum->{np},
             $sum->{slots_used}, $sum->{n_slots},
-            ($sum->{physmem} - $sum->{availmem})/BYTE_TO_GBYTE/1024,
-            $sum->{physmem}/BYTE_TO_GBYTE/1024 ) );
+            ($sum->{totmem} - $sum->{availmem})/BYTE_TO_GBYTE/1024,
+            $sum->{totmem}/BYTE_TO_GBYTE/1024 ) );
     }
     elsif ( $options{format} eq 'html' )
     {
@@ -747,7 +781,7 @@ sub print_node
             $node->{name}, 
             $node->{n_jobs}, $node->{n_ranks}, $node->{np},
             $slotstring,
-            $node_status->{physmem}/BYTE_TO_GBYTE,
+            $node_status->{totmem}/BYTE_TO_GBYTE,
             100 * (1 - $node_status->{availmem}/$node_status->{totmem}),
             $node_status->{loadave},
             $state );
@@ -930,13 +964,18 @@ sub add_node_to_stats
     my $node = shift or return;
     my $accumulator = shift;
 
+    # n_nodes = number of nodes that are not flagged as down (offline nodes
+    #           still contribute to other statistical quantities because they 
+    #           are still running
+    # n_nodes_down = number of nodes that are flagged as down OR offline
+    # n_nodes_total = number of nodes coming out of pbsnodes (n_nodes+n_nodes_down)
     if ( defined($node->{status}->{state})
-    &&  !grep { m/down/ } ( $node->{status}->{state} ) )
+    &&  !grep { m/down/ } ( @{$node->{state}} ) )
     {
         $accumulator->{$_} += $node->{$_} 
             foreach (qw/n_ranks np n_slots slots_used/);
         $accumulator->{$_} += $node->{status}->{$_} 
-            foreach ( qw/ loadave physmem availmem / );
+            foreach ( qw/ loadave physmem availmem totmem / );
         $accumulator->{n_nodes}++;
     }
     $accumulator->{n_nodes_total}++;
