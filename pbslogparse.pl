@@ -221,6 +221,7 @@ sub load_job_list_from_logs
         next unless $entry_type eq "E";     # only care about job ending
 
         $job{jobid} = $job_server;
+        $job{jid} = (split( m/\./, $job_server ))[0];
         my @values = split( m/\s+/, $line );
         foreach ( @values )
         {
