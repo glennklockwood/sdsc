@@ -13,6 +13,8 @@ For users:
   occupied by a process or thread using a lot of CPU.  Designed to provide
   input for an application like numactl to bind jobs to a single socket on a
   shared compute node
+* gordon-grid.py - calculate the layout of compute and IO nodes across the
+  racks of SDSC Gordon, and calculate the torus connectivity of all nodes
 
 For administrators:
 * nfsjobs.pl - scans the queue and finds all jobs running out of a directory
@@ -20,7 +22,10 @@ For administrators:
   be hammering NFS.
 * pbslogparse.pl - a generic log parser for PBS/Torque logs.  Turns the end-
   of-job lines into hashes, then prints formatted output of your choosing
-  (e.g., pbslogparse.pl 20130414 -o jobid,user,end,ctime=end)
+  (e.g., pbslogparse.pl 20130414 -o jobid,user,end,ctime=end).  In addition to
+  the verbatim fields listed in Torque logs, you can request 'exp_factor' for
+  the job's user expansion factor and 'jid' for the job id's number (sans
+  frontend host part)
 * splunk_from_trace - a simple script that takes the output of PBS/Torque's
   tracejob command and generates a Splunk query that returns the logs from
   all nodes participating in the job for the duration the job was being
