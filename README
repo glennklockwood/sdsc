@@ -26,7 +26,13 @@ For administrators:
   the verbatim fields listed in Torque logs, you can request 'exp_factor' for
   the job's user expansion factor and 'jid' for the job id's number (sans
   frontend host part)
-* splunk_from_trace - a simple script that takes the output of PBS/Torque's
+Parsers for PBS Torque's tracejob command:
+* torque/splunk_from_trace - a simple script that takes the output of PBS/Torque's
   tracejob command and generates a Splunk query that returns the logs from
   all nodes participating in the job for the duration the job was being
   tracked by the resource manager
+* torque/momlogs_from_trace - pulls momlogs from compute nodes that participated
+  in a given tracejob's output
+* torque/same_nodes_from_trace - loops through *.trace or a given list of 
+  tracejob outputs and returns nodes that participated in all traces (used to
+  find faulty nodes that break a large number of jobs)
