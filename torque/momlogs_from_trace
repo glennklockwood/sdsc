@@ -1,0 +1,15 @@
+#!/bin/bash
+#
+#  view all mom logs related to a given job from each node
+#
+job=$(sed -e 's/.trace$//' <<< $1)
+for host in $(pcregrep -o 'exec_host=[^\s]+' $job.trace | \
+    sed -e 's/+/\n/g' | \
+    sed -e 's#/[0-9]*$##' | \
+    sed -e 's/exec_host=//' | \
+    sort -u)
+do
+  echo ""
+  echo "=== $host ==="
+  ssh $host "grep $job /opt/torque/mom_logs/*"
+done

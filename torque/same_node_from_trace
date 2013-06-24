@@ -1,0 +1,95 @@
+#!/usr/bin/env perl
+#
+#  same_node_from_trace - given a list of tracejob outputs (or *.trace if none
+#    are given), return a list of nodes shared by all of those jobs.
+#
+#  Glenn K. Lockwood, San Diego Supercomputer Center                June 2013
+#
+use strict;
+use warnings;
+
+# either consider *.trace (default) or a list of tracejob output files given
+# on the command line
+my @trace_list;
+if ( scalar(@ARGV) > 0 ) 
+{
+    @trace_list = @ARGV;
+}
+else
+{
+    @trace_list = <*.trace>;
+}
+
+# build list of nodes used by each job's trace
+my %common_nodes;               # nodes in all traces so far
+for my $file ( @trace_list )
+{
+    my %this_traces_nodes;      # nodes given in this trace
+    chomp($file);
+
+    # read entire trace file into an array
+    open( TRACE, "<$file" ) or next;
+    print "Checking $file...\n";
+    my @trace = <TRACE>;
+    close(TRACE);
+    my @node_list = @{ nodelist_from_trace( \@trace ) };
+
+    $this_traces_nodes{$_} = 1 foreach @node_list;
+    
+    # for the first trace, set all nodes as common
+    if ( ! %common_nodes )
+    {
+        %common_nodes = %this_traces_nodes;
+        print("Including $_\n" ) foreach keys(%common_nodes);
+    }
+    # remove nodes that are unique to this trace
+    else
+    {
+        foreach my $node ( keys(%common_nodes) )
+        {
+            if ( ! $this_traces_nodes{$node} )
+            {
+                printf("Excluding %-14s (not in %s)\n", $node, $file );
+                delete($common_nodes{$node});
+            }
+        }
+    }
+}
+
+print "\n=== Nodes common to all job traces ===\n";
+print "$_\n" foreach keys(%common_nodes);
+
+# return the list of nodes from the last exec_host line.  this implicitly
+# skips any spurious exec_hosts from false starts due to the job getting
+# scheduled on bad nodes
+sub nodelist_from_trace
+{
+    my $trace = shift;
+    my @rank_list;
+
+    # digest list of "machine-rack-node/core" identifiers
+    foreach my $line ( @$trace )
+    {
+        if ( $line =~ m/exec_host=(\S+)/ )
+        {
+            my $list_string = $1;
+            @rank_list = split(m/\+/, $list_string);
+        }
+    }
+
+    # remove redundant node names from list in multicore nodes
+    my %node_list;
+    foreach my $i ( 0 .. $#rank_list )
+    {
+        if ( $rank_list[$i] =~ m{^(.*)/\d+$})
+        {
+            $node_list{$1} = 1;
+        }
+        else
+        {
+            warn "Unparseable node name: $rank_list[$i]";
+        }
+    }
+
+    return [ keys(%node_list) ];
+}
