@@ -10,11 +10,13 @@ use warnings;
 use Getopt::Long;
 use Data::Dumper;
 
-my %options;
+our %options;
+$options{event} = 'E';
 if ( @ARGV > 0 ) 
 {
     GetOptions(
-        "o=s@"    => \$options{fields}, 
+        "o=s@"      => \$options{fields}, 
+        "event=s"   => \$options{event},
     );
 }
 
@@ -218,7 +220,7 @@ sub load_job_list_from_logs
         ( $entry_type, $line ) = split( m/;/, $line, 2 );
         ( $job_server, $line ) = split( m/;/, $line, 2 );
 
-        next unless $entry_type eq "E";     # only care about job ending
+        next unless $entry_type eq $options{event};     # only care about job ending
 
         $job{jobid} = $job_server;
         $job{jid} = (split( m/\./, $job_server ))[0];
