@@ -419,8 +419,16 @@ sub digest_job_data
         ### parse requested resources
         if ( defined($this_job->{Resource_List}) )
         {
-            my @node_properties = split(m/:/, $this_job->{Resource_List}->{nodes});
-            shift(@node_properties);
+            my @node_properties; 
+            if ( $this_job->{Resource_List}->{nodes} )
+            {
+                @node_properties = split(m/:/, $this_job->{Resource_List}->{nodes});
+                shift(@node_properties);
+            }
+            else
+            {
+                warn sprintf("Job %s has no Resource_List->nodes", $this_job->{jobid});
+            }
 
             $this_job->{Resource_List}->{nodes} = \@node_properties;
 

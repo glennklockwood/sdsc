@@ -4,7 +4,7 @@
 #  given job over the time the job was active
 #
 job=$(sed -e 's/.trace$//' <<< $1)
-earliest=$(awk 'BEGIN {n=0} /^[0-9]/ {if ( n==0 ) { printf("%s:%s", $1, $2); n++}}' $job.trace)
+earliest=$(awk 'BEGIN {n=0} /Job Run/ {if ( n==0 ) { printf("%s:%s", $1, $2); n++}}' $job.trace)
 latest=$(tail -n1 $job.trace | awk '{printf("%s:%s", $1, $2)}')
 pcregrep -o 'exec_host=[^\s]+' $job.trace | \
     sed -e 's/+/\n/g' | \
