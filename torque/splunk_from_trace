@@ -3,10 +3,9 @@
 #  generate a splunk query to view all logs from all nodes participating in a 
 #  given job over the time the job was active
 #
-job=$(sed -e 's/.trace$//' <<< $1)
-earliest=$(awk 'BEGIN {n=0} /Job Run/ {if ( n==0 ) { printf("%s:%s", $1, $2); n++}}' $job.trace)
-latest=$(tail -n1 $job.trace | awk '{printf("%s:%s", $1, $2)}')
-pcregrep -o 'exec_host=[^\s]+' $job.trace | \
+earliest=$(awk 'BEGIN {n=0} /Job Run/ {if ( n==0 ) { printf("%s:%s", $1, $2); n++}}' $1)
+latest=$(tail -n1 $1 | awk '{printf("%s:%s", $1, $2)}')
+pcregrep -o 'exec_host=[^\s]+' $1 | \
     sed -e 's/+/\n/g' | \
     sed -e 's#/[0-9]*$##' | \
     sed -e 's/exec_host=//' | \
