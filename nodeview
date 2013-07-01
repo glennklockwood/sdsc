@@ -159,9 +159,6 @@ sub get_options
         # show only overloaded nodes (default:off)
             "overloads!"    => \$options{overloads}, 
 
-        # show node status messages (default:off)
-            "m|messages"    => \$options{messages},  
-
         # show nodes + jobs on nodes (default:off)
             "f|full"        => \$options{full},      
 
@@ -206,6 +203,11 @@ sub get_options
             "writedb=s"     => \$options{writedb},    
         # instead of generating db, read from file (default=regenerate db)
             "readdb=s"      =>  \$options{readdb},
+
+        # show node status notes (default:off)
+            "notes"         => \$options{notes},  
+        # show node status messages (default:off)
+            "m|messages"    => \$options{messages},  
         );
     }
     return \%options;
@@ -509,9 +511,10 @@ sub print_node_list
         || $nodeinfo->{$a}->{rackslot} <=> $nodeinfo->{$b}->{rackslot} 
     } ( keys(%$nodeinfo) );
 
+    ### print the node list header
     print_node() if !$options{quiet};
 
-    ### Print status messages from node (optional)
+    ### print list of nodes matching filter criteria
     my $sum = {};
     foreach my $node_name ( @node_list )
     {
@@ -532,6 +535,7 @@ sub print_node_list
         add_job_to_stats( $_, $sum ) foreach @{$node->{joblist}};
     }
 
+    ### print final summary of printed nodes (optional)
     if ( $options{summary} )
     {
         print "\n";
@@ -837,6 +841,13 @@ sub print_node
     {
         print "<tr><td colspan='$ncols'>"   if $options{format} eq 'html';
         print $node_status->{message} . "\n";
+        print "</td></tr>\n"                if $options{format} eq 'html';
+    }
+    if ( $options{notes}
+    &&   defined($node->{note}) )
+    {
+        print "<tr><td colspan='$ncols'>"   if $options{format} eq 'html';
+        printf("  note: %s\n", $node->{note});
         print "</td></tr>\n"                if $options{format} eq 'html';
     }
 
