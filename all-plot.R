@@ -14,7 +14,8 @@
 first.day.of.data <- 3
 first.hour.of.day <- 1
 
-system <- Sys.getenv('RPLOT_SYSTEM')
+args <- commandArgs(TRUE)
+system <- args[1]
 
 file.output <- '/tmp'
 file.input <- list(
@@ -75,7 +76,7 @@ if ( system == 'gordon' ) {
         slots=trestles$slots.pct,
         mem=trestles$mem.pct )
 } else {
-    stop('You must specify system name (gordon or trestles) via the RPLOT_SYSTEM environment variable.')
+    stop('You must specify system name (gordon or trestles) as a command-line argument')
 }
 file.output = paste(sep='', file.output, '/', system, '-all.png')
 
