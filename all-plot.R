@@ -34,50 +34,34 @@ headers <- c('time',
             'slots.curr','slots.max',
             'mem.curr','mem.max')
 
-gordon <- read.table(header=F,col.names=headers, file=file.input$gordon)
-trestles <- read.table(header=F,col.names=headers, file=file.input$trestles)
+if ( system == 'gordon' ) {
+    input.data <- read.table(header=F,col.names=headers, 
+        file=file.input$gordon)
+} else if ( system == 'trestles' ) {
+    input.data <- read.table(header=F,col.names=headers, 
+        file=file.input$trestles)
+} else {
+    stop('You must specify system name (gordon or trestles) as a command-line argument')
+}
 
-gordon$date <- as.POSIXct(gordon$time,origin='1970-01-01')
-trestles$date <- as.POSIXct(trestles$time,origin='1970-01-01')
-
-gordon$nodes.pct <- gordon$nodes.curr/gordon$nodes.max
-trestles$nodes.pct <- trestles$nodes.curr/trestles$nodes.max
-
-gordon$load.pct <- gordon$load.curr / gordon$load.max
-trestles$load.pct <- trestles$load.curr / trestles$load.max
-
-gordon$cores.pct <- gordon$cores.curr/gordon$cores.max
-trestles$cores.pct <- trestles$cores.curr/trestles$cores.max
-
-gordon$slots.pct <- gordon$slots.curr/gordon$slots.max
-trestles$slots.pct <- trestles$slots.curr/trestles$slots.max
-
-gordon$mem.pct <- gordon$mem.curr/gordon$mem.max
-trestles$mem.pct <- trestles$mem.curr/trestles$mem.max
+input.data$date <- as.POSIXct(input.data$time,origin='1970-01-01')
+input.data$nodes.pct <- input.data$nodes.curr/input.data$nodes.max
+input.data$load.pct <- input.data$load.curr / input.data$load.max
+input.data$cores.pct <- input.data$cores.curr/input.data$cores.max
+input.data$slots.pct <- input.data$slots.curr/input.data$slots.max
+input.data$mem.pct <- input.data$mem.curr/input.data$mem.max
 # At this point the data is ingested
 
 ################################################################################
 ### Set up data to plot
 ################################################################################
-if ( system == 'gordon' ) {
-    plot.data.x <- gordon$date
-    plot.data.data <- list(
-        nodes=gordon$nodes.pct,
-        load=gordon$load.pct,
-        cores=gordon$cores.pct,
-        slots=gordon$slots.pct,
-        mem=gordon$mem.pct )
-} else if ( system == 'trestles' ) {
-    plot.data.x <- trestles$date
-    plot.data.data <- list(
-        nodes=trestles$nodes.pct,
-        load=trestles$load.pct,
-        cores=trestles$cores.pct,
-        slots=trestles$slots.pct,
-        mem=trestles$mem.pct )
-} else {
-    stop('You must specify system name (gordon or trestles) as a command-line argument')
-}
+plot.data.x <- input.data$date
+plot.data.data <- list(
+    nodes=input.data$nodes.pct,
+    load=input.data$load.pct,
+    cores=input.data$cores.pct,
+    slots=input.data$slots.pct,
+    mem=input.data$mem.pct )
 file.output = paste(sep='', file.output, '/', system, '-all.png')
 
 plot.legend <- c(  
@@ -110,12 +94,15 @@ for ( i in seq(from=1, to=length(plot.data.data)) ) {
     par(new=T)
     if ( i > 1 ) plot.ylab = ""
     plot(
-        x=plot.data.x, y=plot.data.data[[i]],
+        x=plot.data.x, 
+        y=plot.data.data[[i]],
         type='l',
         lwd=plot.lw,
         col=plot.colors[[i]],
-        cex.lab=plot.cex, cex.axis=plot.cex, cex.main=plot.cex, 
-            cex.sub=plot.cex,
+        cex.lab=plot.cex, 
+        cex.axis=plot.cex, 
+        cex.main=plot.cex, 
+        cex.sub=plot.cex,
         xlab="",
         ylab=plot.ylab,
         main="",
@@ -130,8 +117,8 @@ for ( i in seq(from=1, to=length(plot.data.data)) ) {
 
 ### Shade in the weekends
 current.day <- first.day.of.data
-current.time <- trestles$time[[1]]
-while ( current.time <= tail(trestles$time, 1) ) {
+current.time <- input.data$time[[1]]
+while ( current.time <= tail(input.data$time, 1) ) {
     end.of.day <- current.time + 86400 - 1
     date.begin <- as.POSIXct(current.time - 3600*first.hour.of.day, 
         origin='1970-01-01')
