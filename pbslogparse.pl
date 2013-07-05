@@ -252,9 +252,20 @@ sub load_job_list_from_logs
             clock_to_seconds( $job{resources_used}{walltime} );
         $job{resources_used}{cput} = 
             clock_to_seconds( $job{resources_used}{cput} );
-        $job{exp_factor} = ($job{end} - $job{etime}) / 
-                            $job{resources_used}->{walltime}
-                            if $job{resources_used}->{walltime};
+        if ( $job{resources_used}->{walltime} )
+        {
+            $job{exp_factor} = ($job{end} - $job{etime}) / 
+                            $job{resources_used}->{walltime};
+        }
+        else
+        {
+            $job{exp_factor} = -1;
+        }
+
+        if ( $job{Resource_List}{nodes} =~ m/^(\d+):ppn=(\d+)$/ )
+        {
+            $job{Resource_List}{processors} = $1 * $2;
+        }
 
         push( @job_list, \%job );
 #       printf( Dumper(\%job) );
