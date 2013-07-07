@@ -48,7 +48,7 @@ def print_gordon_nodes(topo_data, topo_params):
     for abs_ion, ion in enumerate(topo_data['ion_list']):
         # extra blank line separating compute racks
         if (abs_ion % topo_params['subracks_per_rack']) == 0:
-            sys.stdout.write("\n\n")
+            sys.stdout.write("\n")
         # print io node name
         sys.stdout.write('== %s ==' % ion)
         # print all compute nodes arranged according to subrack
@@ -56,7 +56,8 @@ def print_gordon_nodes(topo_data, topo_params):
             if (index % topo_params['compute_per_ion']) == 0:
                 sys.stdout.write("\n");
             sys.stdout.write("%10s" % node)
-
+            if ((index+1) % topo_params['compute_per_row']) == 0:
+                sys.stdout.write("\n");
 ### calculate_hop_distribution: Given a list of nodes (gcn-XX-YY), calculate 
 ###   the hop distances between all possible node pairs and print some basic 
 ###   statistics
