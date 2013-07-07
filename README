@@ -13,8 +13,10 @@ For users:
   occupied by a process or thread using a lot of CPU.  Designed to provide
   input for an application like numactl to bind jobs to a single socket on a
   shared compute node
-* gordon-grid.py - calculate the layout of compute and IO nodes across the
-  racks of SDSC Gordon, and calculate the torus connectivity of all nodes
+* gordon-topology.py - calculate the layout of compute and IO nodes across the
+  racks of SDSC Gordon, and calculate the torus connectivity of all nodes.
+  Optionally return hop distance between two nodes, or distribution of hop 
+  distances for a list of given nodes
 
 For administrators:
 * nfsjobs.pl - scans the queue and finds all jobs running out of a directory

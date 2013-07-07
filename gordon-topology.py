@@ -4,11 +4,18 @@
 #  Gordon and optionally determine hop distribution for a given list of nodes
 #
 #  Glenn K. Lockwood, San Diego Supercomputer Center                June 2013
-#
 
 import sys
 
 def main(argv):
+
+    if len(argv) > 1 and (argv[1] == '--help' or argv[1] == '-h'):
+        print_help(argv)
+        sys.exit(0)
+    if len(argv) == 2:
+        sys.stderr.write('You must provide at least two nodes to calculate '
+            + 'hop distances.\n')
+        sys.exit(1)
 
     # define key parameters describing Gordon's layout
     topo_params = {
@@ -37,8 +44,10 @@ def main(argv):
                                         / len(topo_params['compute_racks']) )
 
     topo_data = get_gordon_topology(topo_params)
-    if len(argv) > 0:
-        calculate_hop_distribution(argv, topo_data)
+    if len(argv) > 3:
+        calculate_hop_distribution(argv[1:], topo_data)
+    elif len(argv) == 3:
+        calculate_hop_pair( argv[1:], topo_data )
     else:
         print_gordon_nodes(topo_data, topo_params)
 
@@ -50,7 +59,10 @@ def print_gordon_nodes(topo_data, topo_params):
         if (abs_ion % topo_params['subracks_per_rack']) == 0:
             sys.stdout.write("\n")
         # print io node name
-        sys.stdout.write('== %s ==' % ion)
+        sys.stdout.write( '== %s at (%d, %d, %d) ==' % (ion, 
+            topo_data['ion2torus'][ion][0],
+            topo_data['ion2torus'][ion][1],
+            topo_data['ion2torus'][ion][2]) )
         # print all compute nodes arranged according to subrack
         for index, node in enumerate(topo_data['ion2compute'][ion]):
             if (index % topo_params['compute_per_ion']) == 0:
@@ -58,6 +70,22 @@ def print_gordon_nodes(topo_data, topo_params):
             sys.stdout.write("%10s" % node)
             if ((index+1) % topo_params['compute_per_row']) == 0:
                 sys.stdout.write("\n");
+
+def calculate_hop_pair( node_list, topo_data ):
+    ion1 = topo_data['compute2ion'][node_list[0]]
+    ion2 = topo_data['compute2ion'][node_list[1]]
+    hops = get_hops( topo_data['ion2torus'][ion1], topo_data['ion2torus'][ion2],
+            topo_data['torus_size'] )
+    print "%10s at ( %d, %d, %d )" % (node_list[0], 
+        topo_data['ion2torus'][ion1][0],
+        topo_data['ion2torus'][ion1][1],
+        topo_data['ion2torus'][ion1][2])
+    print "%10s at ( %d, %d, %d )" % (node_list[1], 
+        topo_data['ion2torus'][ion2][0],
+        topo_data['ion2torus'][ion2][1],
+        topo_data['ion2torus'][ion2][2])
+    print "%d hops" % hops
+
 ### calculate_hop_distribution: Given a list of nodes (gcn-XX-YY), calculate 
 ###   the hop distances between all possible node pairs and print some basic 
 ###   statistics
@@ -67,11 +95,17 @@ def calculate_hop_distribution(node_list, topo_data):
     # build a list of all non-redundant node pairs
     for i in range(len(node_list)-1):
         for j in range(i+1, len(node_list)):
-            node_data = {
-                'pairs':    ( node_list[i], node_list[j] ),
-                'ions':     ( topo_data['compute2ion'][node_list[i]],
-                              topo_data['compute2ion'][node_list[j]] )
-            }
+            try:
+                node_data = {
+                    'pairs':    ( node_list[i], node_list[j] ),
+                    'ions':     ( topo_data['compute2ion'][node_list[i]],
+                                topo_data['compute2ion'][node_list[j]] )
+                }
+            except KeyError:
+                sys.stderr.write('Invalid node pair: %s,%s\n' 
+                    % ( node_list[i], node_list[j] ))
+                sys.exit(1)
+
             node_data['pos'] =( topo_data['ion2torus'][node_data['ions'][0]],
                                 topo_data['ion2torus'][node_data['ions'][1]] )
 
@@ -171,6 +205,21 @@ def get_hops(node1, node2, torus_size):
 
     return hops
 
+def print_help(argv):
+        print r"""  Syntax:
+    %20s                         Prints rack layout for system
+    %20s gcn-XX-YY gcn-AA-BB ... Prints stats on hop distances 
+                                                 between all pairs in given list
+                                                 of nodes
+
+   You can get hop distances for all nodes in a given job using something
+   like this too (e.g., for job 12345):
+
+    %20s $(qstat 12345 -f -x \
+        | grep -o '<exec_host>.*</exec_host>' \
+        | grep -Eo 'gcn-[^-]*-[^/]*' \
+        | uniq)
+""" % ( argv[0], argv[0], argv[0] )
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main(sys.argv)
