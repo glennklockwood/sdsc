@@ -71,6 +71,46 @@ def print_gordon_nodes(topo_data, topo_params):
             if ((index+1) % topo_params['compute_per_row']) == 0:
                 sys.stdout.write("\n");
 
+### print_gordon_graph: generate graph connectivity data in the 'dot' format
+###   amenable to being plugged into graphviz
+def print_gordon_graph(topo_data, topo_params):
+    n_ions = len(topo_data['ion_list'])
+    neighbor_count = {}
+
+    # Print torus nodes
+    for i in range(0, n_ions-1):
+        for j in range(i+1, n_ions):
+            ion1, ion2 = ( topo_data['ion_list'][i], topo_data['ion_list'][j] )
+            hops = get_hops( topo_data['ion2torus'][ion1], 
+                             topo_data['ion2torus'][ion2],
+                             topo_data['torus_size'] )
+            if hops == 1:
+                print( '"%s" -- "%s";' % (ion1, ion2) )
+                try:
+                    neighbor_count[ion1]
+                except KeyError:
+                    neighbor_count[ion1] = 1
+                else:
+                    neighbor_count[ion1] += 1
+                try:
+                    neighbor_count[ion2]
+                except KeyError:
+                    neighbor_count[ion2] = 1
+                else:
+                    neighbor_count[ion2] += 1
+
+    for ion in topo_data['ion_list']:
+        for compute in topo_data['ion2compute'][ion]:
+            print( '"%s" -- "%s";' % ( ion, compute ) )
+
+    # print number of neighbors to check validity
+#   for index,ion in enumerate(topo_data['ion_list']):
+#       try: neighbor_count[ion]
+#       except KeyError:
+#           print( "%s (%d) had no neighbors???" % (ion, index) )
+#       else:
+#           print( "%s (%d) had %d neighbors" % ( ion, index, neighbor_count[ion] ) )
+
 def calculate_hop_pair( node_list, topo_data ):
     ion1 = topo_data['compute2ion'][node_list[0]]
     ion2 = topo_data['compute2ion'][node_list[1]]
