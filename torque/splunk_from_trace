@@ -18,5 +18,5 @@ BEGIN { n=0 }
   printf("host=%s.sdsc.edu", $1);
   n++;
 }
-END { printf(") AND NOT sshd AND NOT crond AND NOT audit AND NOT pam_unix ") }'
+END { printf(") AND NOT sshd AND NOT crond AND NOT audit AND NOT 411-alert-handler AND NOT suppressed") }'
 echo "earliest=$earliest latest=$latest"
