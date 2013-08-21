@@ -1,18 +1,11 @@
 #!/usr/bin/env Rscript
 # 
-#  Glenn K. Lockwood, San Diego Supercomputer Center                    May 2013
+#  Glenn K. Lockwood, San Diego Supercomputer Center                 August 2013
 #
 #  Generate a pretty plot of utilization from the temporally concatenated 
 #  output of `nodeview --brief-summary`
 #
-#  Pretty hacky so far.  Don't expect this to run without modification!
-#
 ################################################################################
-#
-# first.day.of.data is the day of week on which the data starts (0=Sunday)
-# first.hour.of.day is the first hour reported of each day
-first.day.of.data <- 3
-first.hour.of.day <- 1
 
 args <- commandArgs(TRUE)
 system <- args[1]
@@ -88,8 +81,6 @@ plot.colors <- c(
     '#FF7F00',
     '#F781BF',
     '#A65628' )
-#plot.colors <- c( '#1B9E77', '#D95F02', '#7570B3',
-#   '#E7298A', '#66A61E', '#E6AB02', '#A6761D' ) 
 plot.ltys <- c(
     'solid',
     'solid',
@@ -107,13 +98,11 @@ plot.lws<- c(
     4,
     4 )
 
-
-
 plot.ylim <- c(0.0,1.0)
 plot.cex <- 1.5
 plot.ylab <- "Fraction Utilized"
 
-### Generate gridlines along day boundaries
+### determine day boundaries so the plot's gridlines will match up
 plot.data.firstday <- as.POSIXlt(plot.data.x[[1]])
 plot.data.firstday$sec <- 0
 plot.data.firstday$min <- 0
@@ -146,10 +135,10 @@ for ( i in seq(from=1, to=length(plot.data.y)) ) {
         cex.main=plot.cex, 
         cex.sub=plot.cex,
         xlab="",
-#       xlim=plot.xlim,
         ylab=plot.ylab,
         main="",
         ylim=plot.ylim,
+        ### draw grid aligned to days (86400 seconds)
         panel.first=c(abline( 
             h=seq(from=0.0, to=1.0, by=0.1),
             v=seq(as.POSIXct(plot.data.firstday)+86400, 
@@ -158,7 +147,7 @@ for ( i in seq(from=1, to=length(plot.data.y)) ) {
         )
 }
 
-### Find data points corresponding to interesting boundaries (days, weekends)
+### Find data points falling on weekends (Saturday and Sunday)
 plot.data.isweekend <- sapply(X=plot.data.x, FUN=function(x) { 
     xx = as.POSIXlt(x)
     if ( xx$wday == 0 || xx$wday == 6 ) { 
