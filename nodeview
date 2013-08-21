@@ -260,7 +260,14 @@ sub get_job_data
         my $exe = $options{torquebin} . '/qstat -x';
         $inputxml=`$exe`;
     }
-    $jobinfo = XMLin($inputxml)->{Job};
+    if ( $inputxml )    # empty queue will cause XMLin to break
+    {
+        $jobinfo = XMLin($inputxml)->{Job} or $jobinfo = {};
+    }
+    else
+    {
+        $jobinfo = {};
+    }
     return $jobinfo;
 }
 
@@ -588,6 +595,7 @@ sub print_summary
     my $sum = shift or die "Passed a bad accumulator";
     my @buffer;
     $sum->{n_nodes_down} = 0 if !$sum->{n_nodes_down};
+    $sum->{n_jobs} = 0 if !$sum->{n_jobs};
 
     push(@buffer, sprintf("%-13s: %5d\n",   'Total nodes',  $sum->{n_nodes}));
     push(@buffer, sprintf("%-13s: %5d\n",   'Total cores',  $sum->{np}));
