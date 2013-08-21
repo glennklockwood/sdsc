@@ -1,4 +1,3 @@
-===============================================================================
 This repository contains various tools I've made to assist me with my work at 
 the San Diego Supercomputer Center.  They are all mostly independent scripts
 that function on their own.

@@ -402,14 +402,17 @@ sub digest_node_data
 sub digest_job_data
 {
     my $temp;
-    foreach ( @$jobinfo )
+    if ( ref($jobinfo) ne 'HASH' ) 
     {
-        my $key = $_->{Job_Id};
+        foreach ( @$jobinfo )
+        {
+            my $key = $_->{Job_Id};
 
-        die "Null jobid!" if !defined($key);
-        die "Duplicate job ID $key; aborting" if defined($temp->{$key});
+            die "Null jobid!" if !defined($key);
+            die "Duplicate job ID $key; aborting" if defined($temp->{$key});
 
-        $temp->{$key} = $_;
+            $temp->{$key} = $_;
+        }
     }
     $jobinfo = $temp;
 
@@ -866,8 +869,8 @@ sub print_job
                    "C" => "Cmpletd",    "T" => "Transfr",
                    "W" => "Waiting",    "S" => "Suspend" );
 
-    my $head_format = "%9s %7s %5s %-12s %-12.12s %12s %4s %10s\n";
-    my $print_format = "%9d %7s %5d %-12s %-12.12s %12s %3d%% %10s\n";
+    my $head_format = "%9s %7s %6s %-12s %-12.12s %12s %4s %10s\n";
+    my $print_format = "%9d %7s %6s %-12s %-12.12s %12s %3d%% %10s\n";
     my $job = shift;
     my $ncols = shift;  # printing jobs in html format currently not implemented
 
@@ -890,7 +893,10 @@ sub print_job
             ( defined($states{$job->{job_state}}) 
                 ? $states{$job->{job_state}} 
                 : "??? - " . $job->{job_state} ),
-            $job->{Resource_List}->{nodect},
+            (sprintf( "%d:%d",
+                $job->{Resource_List}->{nodect},
+                $job->{Resource_List}->{ppn} )
+                ),
             (split(m/@/, $job->{Job_Owner}))[0],
             $job->{Job_Name},
             $job->{Resource_List}->{walltime},
