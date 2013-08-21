@@ -22,7 +22,7 @@ file.input <- list(
     gordon='/users/u2/glockwood/public_html/status/gordon-ongoing.incl',
     trestles='/users/u2/glockwood/public_html/status/trestles-ongoing.incl' )
 
-headers <- c('time',
+compute.headers <- c('time',
             'nodes.tot',
             'cores.tot',
             'jobs.tot',
@@ -32,110 +32,161 @@ headers <- c('time',
             'load.curr','load.max',
             'cores.curr','cores.max',
             'slots.curr','slots.max',
-            'mem.curr','mem.max')
+            'mem.curr','mem.max',
+            'proj.max','proj.curr',
+            'scratch.max','scratch.curr')
 
 if ( system == 'gordon' ) {
-    input.data <- read.table(header=F,col.names=headers, 
+    compute.data <- read.table(header=F,col.names=compute.headers, 
         file=file.input$gordon)
 } else if ( system == 'trestles' ) {
-    input.data <- read.table(header=F,col.names=headers, 
+    compute.data <- read.table(header=F,col.names=compute.headers, 
         file=file.input$trestles)
 } else {
     stop('You must specify system name (gordon or trestles) as a command-line argument')
 }
 
-input.data$date <- as.POSIXct(input.data$time,origin='1970-01-01')
-input.data$nodes.pct <- input.data$nodes.curr/input.data$nodes.max
-input.data$load.pct <- input.data$load.curr / input.data$load.max
-input.data$cores.pct <- input.data$cores.curr/input.data$cores.max
-input.data$slots.pct <- input.data$slots.curr/input.data$slots.max
-input.data$mem.pct <- input.data$mem.curr/input.data$mem.max
+compute.data$date <- as.POSIXct(compute.data$time,origin='1970-01-01')
+compute.data$nodes.pct <- compute.data$nodes.curr/compute.data$nodes.max
+compute.data$load.pct <- compute.data$load.curr / compute.data$load.max
+compute.data$cores.pct <- compute.data$cores.curr/compute.data$cores.max
+compute.data$slots.pct <- compute.data$slots.curr/compute.data$slots.max
+compute.data$mem.pct <- compute.data$mem.curr/compute.data$mem.max
+compute.data$proj.pct <- compute.data$proj.curr/compute.data$proj.max
+compute.data$scratch.pct <- compute.data$scratch.curr/compute.data$scratch.max
 # At this point the data is ingested
 
 ################################################################################
 ### Set up data to plot
 ################################################################################
-plot.data.x <- input.data$date
-plot.data.data <- list(
-    nodes=input.data$nodes.pct,
-    load=input.data$load.pct,
-    cores=input.data$cores.pct,
-    slots=input.data$slots.pct,
-    mem=input.data$mem.pct )
+tmp.compute.xvec <- (compute.data$date > (tail(compute.data$date, n=1) - 760*3600))
+plot.data.x <- compute.data$date[tmp.compute.xvec]
+plot.data.y <- list(
+    nodes=  compute.data$nodes.pct[tmp.compute.xvec],
+    load=   compute.data$load.pct[tmp.compute.xvec],
+    cores=  compute.data$cores.pct[tmp.compute.xvec],
+    slots=  compute.data$slots.pct[tmp.compute.xvec],
+    mem=    compute.data$mem.pct[tmp.compute.xvec],
+    proj=   compute.data$proj.pct[tmp.compute.xvec],
+    scratch=compute.data$scratch.pct[tmp.compute.xvec] )
 file.output = paste(sep='', file.output, '/', system, '-all.png')
 
 plot.legend <- c(  
-    'Nodes',
-    'Load',
-    'Cores',
-    'Slots',
-    'Mem' )
+    'Availability',
+    'CPU Load',
+    'Cores Req\'d',
+    'Utilization',
+    'Memory Used',
+    'Oasis Proj',
+    'Oasis Scratch'
+    )
 plot.colors <- c(
-    'red',
-    'chartreuse3',
-    'blue',
-    'black',
-    'magenta' )
+    '#E41A1C',
+    '#377EB8',
+    '#4DAF4A',
+    '#984EA3',
+    '#FF7F00',
+    '#F781BF',
+    '#A65628' )
+#plot.colors <- c( '#1B9E77', '#D95F02', '#7570B3',
+#   '#E7298A', '#66A61E', '#E6AB02', '#A6761D' ) 
+plot.ltys <- c(
+    'solid',
+    'solid',
+    'solid',
+    'solid',
+    'solid',
+    'dotted',
+    'dotted' )
+plot.lws<- c(
+    2,
+    2,
+    2,
+    2,
+    2,
+    4,
+    4 )
 
-plot.lw <- 2
+
+
 plot.ylim <- c(0.0,1.0)
 plot.cex <- 1.5
 plot.ylab <- "Fraction Utilized"
+
+### Generate gridlines along day boundaries
+plot.data.firstday <- as.POSIXlt(plot.data.x[[1]])
+plot.data.firstday$sec <- 0
+plot.data.firstday$min <- 0
+plot.data.firstday$hour <- 0
+plot.data.lastday <- as.POSIXlt(tail(plot.data.x,1))
+plot.data.lastday$sec <- 0
+plot.data.lastday$min <- 0
+plot.data.lastday$hour <- 0
 
 ################################################################################
 ### Plot data
 ################################################################################
 png(file.output, width=640,height=480, bg="transparent")
 layout(rbind(1,2),heights=c(7,1))
-par(new=F, mar=c(2,6.5,1,0))
+par(new=F, mar=c(2, 6.5, 1, 2))
 
 plot.new()
-for ( i in seq(from=1, to=length(plot.data.data)) ) {
+for ( i in seq(from=1, to=length(plot.data.y)) ) {
     par(new=T)
     if ( i > 1 ) plot.ylab = ""
     plot(
-        x=plot.data.x, 
-        y=plot.data.data[[i]],
+        x=plot.data.x,
+        y=plot.data.y[[i]],
         type='l',
-        lwd=plot.lw,
+        lwd=plot.lws[[i]],
+        lty=plot.ltys[[i]],
         col=plot.colors[[i]],
         cex.lab=plot.cex, 
         cex.axis=plot.cex, 
         cex.main=plot.cex, 
         cex.sub=plot.cex,
         xlab="",
+#       xlim=plot.xlim,
         ylab=plot.ylab,
         main="",
         ylim=plot.ylim,
-        panel.first=c(abline( h=seq(from=0.0, to=1.0, by=0.1),
-        v=seq(plot.data.x[[1]], tail(plot.data.x,1), 86400),
+        panel.first=c(abline( 
+            h=seq(from=0.0, to=1.0, by=0.1),
+            v=seq(as.POSIXct(plot.data.firstday)+86400, 
+                  as.POSIXct(plot.data.lastday) -86000, 86400),
         col='#00000011') )
-
-
         )
 }
 
-### Shade in the weekends
-current.day <- first.day.of.data
-current.time <- input.data$time[[1]]
-while ( current.time <= tail(input.data$time, 1) ) {
-    end.of.day <- current.time + 86400 - 1
-    date.begin <- as.POSIXct(current.time - 3600*first.hour.of.day, 
-        origin='1970-01-01')
-    date.end   <- as.POSIXct(current.time - 3600*first.hour.of.day + 86400, 
-        origin='1970-01-01')
+### Find data points corresponding to interesting boundaries (days, weekends)
+plot.data.isweekend <- sapply(X=plot.data.x, FUN=function(x) { 
+    xx = as.POSIXlt(x)
+    if ( xx$wday == 0 || xx$wday == 6 ) { 
+        return(TRUE)
+    } 
+    else { 
+        return(FALSE)
+    } 
+})
 
-    if ( current.day%%7 == 0 | current.day%%7 == 6 ) {
-        rect( xleft=date.begin,
-              xright=date.end,
-              ybottom=0.0,
-              ytop=1.0,
-              density=100,
-              border=NA,
-              col='#00000022' )
+### Shade in the weekends
+is.weekend = 0
+weekend.start = 1
+for ( i in seq(1, length(plot.data.x) ) ) {
+    if ( plot.data.isweekend[[i]] && !is.weekend ) {
+        weekend.start = i
+        is.weekend = 1
     }
-    current.time <- end.of.day + 1
-    current.day <- current.day + 1
+    else if ( !plot.data.isweekend[[i]] && is.weekend ) {
+        rect( xleft=plot.data.x[[weekend.start]],
+            xright=plot.data.x[[i-1]],
+            ybottom=0.0,
+            ytop=1.0,
+            density=100,
+            border=NA,
+            col='#00000022' )
+        is.weekend = 0
+    }
 }
 
 ################################################################################
@@ -147,10 +198,11 @@ plot.new()
 legend('right',
     legend=plot.legend,
     col=plot.colors,
-    lwd=plot.lw,
+    lwd=plot.lws,
+    lty=plot.ltys,
     bg='transparent',
     cex=plot.cex,
-    ncol=5,
+    ncol=3,
     bty='n'
     )
 
