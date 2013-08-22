@@ -955,7 +955,7 @@ sub attach_jobs_to_node
     {
         return if ref($node->{jobs}) eq 'HASH'; # data already processed
         my %job_ranks;
-        my @job_tags = split(m/,?\s+/, $node->{jobs});
+        my @job_tags = split(m/[,\s]+/, $node->{jobs});
         foreach ( @job_tags )
         {
             die "Garbled jobs field $_" unless ( $_ =~ m/^\d+\/(\S+)$/ );
