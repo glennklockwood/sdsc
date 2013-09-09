@@ -44,6 +44,9 @@ foreach my $job ( @$job_list )
 #   next if $path =~ m{^/oasis};
     next unless $path =~ m{^/home};
 
+    my $owner = (split('@', $job->{Job_Owner}))[0];
+    next unless grep(m/^$owner$/, @users);
+
     if ( $job->{Resource_List}->{nodes} =~ m/^(\d+):ppn=(\d+)/ )
     {
         $job->{ct_nodes} = $1;
