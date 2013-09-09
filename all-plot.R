@@ -10,10 +10,10 @@
 args <- commandArgs(TRUE)
 system <- args[1]
 
-file.output <- '/tmp'
+file.output <- './'
 file.input <- list(
-    gordon='/users/u2/glockwood/public_html/status/gordon-ongoing.incl',
-    trestles='/users/u2/glockwood/public_html/status/trestles-ongoing.incl' )
+    gordon='gordon-ongoing.incl',
+    trestles='trestles-ongoing.incl' )
 
 compute.headers <- c('time',
             'nodes.tot',
@@ -176,6 +176,16 @@ for ( i in seq(1, length(plot.data.x) ) ) {
             col='#00000022' )
         is.weekend = 0
     }
+}
+### if the data ends on a weekend, draw that last box
+if ( tail(plot.data.isweekend, n=1) && weekend.start > 1 ) {
+    rect( xleft=plot.data.x[[weekend.start]],
+        xright=tail(plot.data.x,n=1),
+        ybottom=0.0,
+        ytop=1.0,
+        density=100,
+        border=NA,
+        col='#00000022' )
 }
 
 ################################################################################
