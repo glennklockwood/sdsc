@@ -22,7 +22,7 @@ BEGIN
 use Data::Dumper;
 use Term::ANSIColor;
 
-use constant BYTE_TO_GBYTE => 1024*1024*1024;
+use constant BYTE_TO_GBYTE  => 1024*1024*1024;
 
 ### Get command-line input
 our %options = %{ get_options() };
@@ -597,13 +597,14 @@ sub print_summary
     $sum->{n_nodes_down} = 0 if !$sum->{n_nodes_down};
     $sum->{n_jobs} = 0 if !$sum->{n_jobs};
 
+    # **n_nodes** DOES include offlined nodes but DOES NOT include downed nodes
     push(@buffer, sprintf("%-13s: %5d\n",   'Total nodes',  $sum->{n_nodes}));
     push(@buffer, sprintf("%-13s: %5d\n",   'Total cores',  $sum->{np}));
     push(@buffer, sprintf("%-13s: %5d\n",   'Total jobs',   $sum->{n_jobs}));
     push(@buffer, sprintf("%-13s: %5d\n",   'Total ranks',  $sum->{n_ranks}));
     push(@buffer, sprintf("%-13s: %5.1f\n", 'Total load',   $sum->{loadave}));
 
-    # the following sums are counted up over n_nodes nodes (NOT n_nodes_total):
+    # the following sums are counted over **n_nodes** nodes (NOT n_nodes_total):
     #   n_ranks np n_slots slots_used
     #   loadave physmem availmem totmem
  
@@ -629,7 +630,7 @@ sub print_summary
     push(@buffer, sprintf("%-17s: %6d/%6d (%5.1f%%)\n", 
         'Slot Utilization', 
         $sum->{slots_used}, $sum->{n_slots},
-        100 * $sum->{slots_used} / $sum->{np} * $options{slotsize}));
+        100 * $sum->{slots_used} / $sum->{n_slots}));
     # the choice of totmem instead of physmem is not firm
     #   physmem = total physical memory available
     #   totmem = total virtual memory available (physmem+swap)
@@ -958,7 +959,7 @@ sub attach_jobs_to_node
         my @job_tags = split(m/[,\s]+/, $node->{jobs});
         foreach ( @job_tags )
         {
-            die "Garbled jobs field $_" unless ( $_ =~ m/^\d+\/(\S+)$/ );
+            die "Garbled jobs field [$_]" unless ( $_ =~ m/^\d+\/(\S+)$/ );
             $job_ranks{$1}++;
         }
         $node->{jobs} = \%job_ranks;
