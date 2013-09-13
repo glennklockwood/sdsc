@@ -605,7 +605,7 @@ sub print_summary
     push(@buffer, sprintf("%-13s: %5.1f\n", 'Total load',   $sum->{loadave}));
 
     # the following sums are counted over **n_nodes** nodes (NOT n_nodes_total):
-    #   n_ranks np n_slots slots_used
+    #   n_ranks np slots_used
     #   loadave physmem availmem totmem
  
     # n_nodes_total = number of nodes reported by pbs
@@ -1007,11 +1007,12 @@ sub add_node_to_stats
     &&  !grep { m/down/ } ( @{$node->{state}} ) )
     {
         $accumulator->{$_} += $node->{$_} 
-            foreach (qw/n_ranks np n_slots slots_used/);
+            foreach (qw/n_ranks np slots_used/);
         $accumulator->{$_} += $node->{status}->{$_} 
             foreach ( qw/ loadave physmem availmem totmem / );
         $accumulator->{n_nodes}++;
     }
+    $accumulator->{n_slots} += $node->{n_slots};
     $accumulator->{n_nodes_total}++;
     $accumulator->{n_nodes_down}++ if grep(m/(offline|down)/, 
                                         @{$node->{state}});
