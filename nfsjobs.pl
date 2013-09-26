@@ -12,6 +12,7 @@ BEGIN {
 }
 
 use XML::Simple;
+use Cwd 'abs_path';
 
 die unless $ARGV[0];
 my $nfs_ip = $ARGV[0];
@@ -44,6 +45,11 @@ foreach my $job ( @$job_list )
 #   next if $path =~ m{^/oasis};
     next unless $path =~ m{^/home};
 
+    # dereference symlinks in paths if possible.  most user home dirs aren't 
+    # world-readable, so most paths cannot be dereferenced properly without
+    # running this as root
+    my $abs_path = abs_path($path); 
+
     my $owner = (split('@', $job->{Job_Owner}))[0];
     next unless grep(m/^$owner$/, @users);
 
@@ -54,6 +60,7 @@ foreach my $job ( @$job_list )
         $job->{ct_ranks} = $1 * $2;
     }
     $job->{path} = $path;
+    $job->{abs_path} = $abs_path;
 
     push(@offenders, $job);
 }
@@ -66,5 +73,5 @@ foreach my $job ( sort { $a->{ct_ranks} <=> $b->{ct_ranks} } @offenders )
         (split(m/@/, $job->{Job_Owner}))[0], 
         (split(m/\./, $job->{Job_Id}))[0], 
         $job->{ct_ranks},
-        dirname($job->{path}) );
+        ( $job->{abs_path} ? dirname($job->{abs_path}) : dirname($job->{path}) ) );
 }
