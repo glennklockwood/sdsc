@@ -140,9 +140,13 @@ elsif ( $options{quiet} )
 {
     print_summary($clusterinfo) if $options{summary};
 }
+elsif ( $options{nfsjobs} )
+{
+    print_nfs_jobs($jobinfo, $options{nfsjobs});
+}
 else ### if node list is being printed, it will print a summary of printed nodes
 {
-    print_node_list($nodeinfo) 
+    print_node_list($nodeinfo);
 }
 
 ################################################################################
@@ -208,6 +212,9 @@ sub get_options
             "notes"         => \$options{notes},  
         # show node status messages (default:off)
             "m|messages"    => \$options{messages},  
+
+        # activate nfsjobs mode
+            "nfsjobs=s"     => \$options{nfsjobs},
         );
     }
     return \%options;
@@ -1066,3 +1073,173 @@ sub read_db
     my $hashref = retrieve($filename);
     return ($hashref->{nodeinfo}, $hashref->{jobinfo}, $hashref->{clusterinfo});
 }
+
+################################################################################
+### print_nfs_jobs: run in nfsjobs.pl mode to print users running on hosts
+### 
+
+sub print_nfs_jobs
+{
+    use File::Basename;
+
+    my $jobinfo = shift;
+    my $location = shift;
+
+
+    # there are two modes of operation here; if $location is an IP address, we
+    # look for jobs running on that nfs host.  if it is an absolute path 
+    # (leading slash), find jobs running there
+
+    my @users;
+    # user did not input an absolute path
+    unless ( $location =~ m{^\s+/} ) 
+    {
+        open ( AUTOFS, "</etc/auto.home" ) or die $@;
+        while ( my $line = <AUTOFS> )
+        {
+            next unless $line =~ m{(\d+\.\d+\.\d+\.\d+):/export/home\d*/([^/]*)$};
+            if ($1 eq $location) {
+                push( @users, $2 );
+            }
+        }
+        close(AUTOFS);
+        printf( "Got %d users on %s\n", scalar(@users), $location );
+    }
+
+    my @offenders;
+    my $debug;
+    foreach my $jobid ( keys(%{$jobinfo}) )
+    {
+        my $job = $jobinfo->{$jobid};
+        next unless defined($job->{Output_Path});
+        next unless $job->{job_state} eq "R";
+        my $path = $job->{Output_Path};
+        $path =~ s/^[^:]*://;
+#       next if $path =~ m{^/oasis};
+
+        # dereference symlinks in paths if possible.  most user home dirs aren't 
+        # world-readable, so most paths cannot be dereferenced properly without
+        # running this as root
+        my $abs_path;
+#       $abs_path = abs_path($path); 
+
+        if ( @users )
+        {
+            next unless $path =~ m{^/home};
+            my $owner = (split('@', $job->{Job_Owner}))[0];
+            next unless grep(m/^$owner$/, @users);
+        }
+        else
+        {
+            next unless $path =~ m{^$location};
+        }
+
+        $job->{ct_ranks} = $job->{Resource_List}->{ppn} 
+                           * $job->{Resource_List}->{nodect};
+        $job->{path} = $path;
+        $job->{abs_path} = $abs_path;
+
+        $job->{jid} = (split(m/\./, $job->{Job_Id}))[0];
+
+        push(@offenders, $job);
+    }
+
+    # print jobs sorted by severity
+    printf( "%12s   %7s   %5s   %s\n", 'user', 'jobid', '#ranks', '$PBS_O_WORKDIR' );
+    foreach my $job ( sort { 
+        $a->{ct_ranks} <=> $b->{ct_ranks} 
+        || $a->{jid} <=> $b->{jid}
+        } @offenders )
+    {
+        printf( "%12s   %7d   %5d   %s\n",
+            (split(m/@/, $job->{Job_Owner}))[0], 
+            (split(m/\./, $job->{Job_Id}))[0], 
+            $job->{ct_ranks},
+            ( $job->{abs_path} ? dirname($job->{abs_path}) : dirname($job->{path}) ) );
+    }
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+nodeview - report information and do basic analyses about a cluster's state via Torque's pbsnodes and qstat commands
+
+=head1 DESCRIPTION
+
+This program parses the output of pbsnodes and qstat and provides various different ways to report this information or subsets of it.  The following options are available:
+
+--overloads 
+    show only overloaded nodes (default:off)
+
+-f, --full
+    show nodes + jobs on nodes (default:off)
+
+--summary
+    include usage summary at end (default:off)
+
+--brief-summary
+    print a single-line summary (default:off)
+
+-n, --node=node1[,node2[,...]]
+    show only certain nodes (default:show all)
+
+-j, --job=job1[,job2[,...]]
+    show nodes associated with certain jobs (default:all)
+
+-u, --user=user1[,user2[,...]]
+    show nodes associated with certain user (default:all)
+
+--slotsize=count
+    number of cores per scheduler slot (default:autodetect)
+
+--jobview
+    show only jobs, not nodes (default:off)
+
+-s|--state=state
+    show only nodes with given state (default:all states)
+
+-p|--properties=property
+    show only nodes with given properties (default:any properties)
+
+--nodeinfo=filename
+    read pbsnodes input from filename (default:use pbsnodes -x)
+
+--jobinfo=filename
+    specify qstat input from filename (default:use qstat -x)
+
+--format=table|html
+    choose output format (default:table)
+
+--quiet
+    suppress output of node list (default:off)
+
+--torquebin=path
+    specify path to torque binaries (default:/opt/torque/bin)
+
+--writedb=filename
+    write internal cluster info db to filename (default=do not write db to file)
+
+--readdb=filename
+    instead of generating a new cluster info db, read it filename (default=regenerate db)
+
+--notes
+    show node status notes (default:off)
+
+-m|--messages
+    show node status messages (default:off)
+
+--nfsjobs=path|host
+    activate nfsjobs mode and print all jobs running out of given path OR a home directory mounted remotely from host
+
+=head1 KNOWN BUGS
+
+No known issues.
+
+=head1 AUTHOR
+
+Glenn K. Lockwood (glock@sdsc.edu)
+
+=cut
