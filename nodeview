@@ -197,6 +197,8 @@ sub get_options
 
         # output format: table, html (default:table)
             "format=s"      => \$options{format},
+        # disable use of ansi color (default:off)
+            "nocolor"       => \$options{nocolor},
         # suppress output of node list (default:off)
             "quiet"         =>  \$options{quiet},
 
@@ -374,8 +376,19 @@ sub digest_node_data
             # need to count up mpi ranks from each job on node
             foreach my $job ( @{$node->{joblist}} )
             {
-                $node->{slots_used} += $job->{Resource_List}->{ppn} / 
-                    $options{slotsize};
+                if ( $job->{Resource_List}->{ppn} ) 
+                {
+                    $node->{slots_used} += $job->{Resource_List}->{ppn} / 
+                        $options{slotsize};
+                }
+                # can request without ppn to get all the node's slots
+                else 
+                {
+                    # should this be += or =?  are there any circumstances under
+                    # which two jobs without a ppn request will fit on a single
+                    # node?
+                    $node->{slots_used} = $node->{n_slots};
+                }
             }
         }
         else    # n_jobs should always be =1 on exclusive nodes
@@ -829,9 +842,9 @@ sub print_node
         }
         else
         {
-            print color 'bold red';
+            print color 'bold red' unless $options{nocolor};
             printf( $print_format, @print_params );
-            print color 'reset';
+            print color 'reset' unless $options{nocolor};
         }
     }
     elsif ( grep( m/(overload|lowmem)/, @{$node_status->{warnings}} ) )
@@ -844,9 +857,9 @@ sub print_node
         }
         else
         {
-            print color 'bold yellow';
+            print color 'bold yellow' unless $options{nocolor};
             printf( $print_format, @print_params );
-            print color 'reset';
+            print color 'reset' unless $options{nocolor};
         }
     }
     else
@@ -911,8 +924,9 @@ sub print_job
                 : "??? - " . $job->{job_state} ),
             (sprintf( "%d:%d",
                 $job->{Resource_List}->{nodect},
-                $job->{Resource_List}->{ppn} )
-                ),
+                ($job->{Resource_List}->{ppn} 
+                    ? $job->{Resource_List}->{ppn} 
+                    : $job->{node}->{np}))),
             (split(m/@/, $job->{Job_Owner}))[0],
             $job->{Job_Name},
             $job->{Resource_List}->{walltime},
@@ -1212,6 +1226,9 @@ This program parses the output of pbsnodes and qstat and provides various differ
 
 --format=table|html
     choose output format (default:table)
+
+--nocolor
+    disable use of ANSI color to highlight particular nodes (default:off)
 
 --quiet
     suppress output of node list (default:off)
