@@ -7,6 +7,7 @@
 #
 ################################################################################
 
+ismooth <- 2    # ismooth: 0=off, 1=smoothing, 2=fourier filter
 args <- commandArgs(TRUE)
 system <- args[1]
 
@@ -49,6 +50,7 @@ compute.data$proj.pct <- compute.data$proj.curr/compute.data$proj.max
 compute.data$scratch.pct <- compute.data$scratch.curr/compute.data$scratch.max
 # At this point the data is ingested
 
+
 ################################################################################
 ### Set up data to plot
 ################################################################################
@@ -62,6 +64,7 @@ plot.data.y <- list(
     mem=    compute.data$mem.pct[tmp.compute.xvec],
     proj=   compute.data$proj.pct[tmp.compute.xvec],
     scratch=compute.data$scratch.pct[tmp.compute.xvec] )
+
 file.output = paste(sep='', file.output, '/', system, '-all.png')
 
 plot.legend <- c(  
@@ -75,8 +78,8 @@ plot.legend <- c(
     )
 plot.colors <- c(
     '#E41A1C',
-    '#377EB8',
-    '#4DAF4A',
+    '#377EB866',
+    '#4DAF4A66',
     '#984EA3',
     '#FF7F00',
     '#F781BF',
@@ -87,9 +90,9 @@ plot.ltys <- c(
     'solid',
     'solid',
     'solid',
-    'dotted',
-    'dotted' )
-plot.lws<- c(
+    'solid',
+    'solid' )
+plot.lws <- c(
     2,
     2,
     2,
@@ -97,10 +100,60 @@ plot.lws<- c(
     2,
     4,
     4 )
+plot.ismooth <- c(
+    0,
+    3,
+    3,
+    1,
+    9,
+    0,
+    0 )
 
 plot.ylim <- c(0.0,1.0)
 plot.cex <- 1.5
 plot.ylab <- "Fraction Utilized"
+
+### Data smoothing to clean up oversampled data
+smoother <- function( item ) {
+    vect <- plot.data.y[[item]]
+    newvec <- vect
+    ism <- plot.ismooth[[item]]
+
+    for ( i in seq(length.out=ism) ) {
+        cat("First smoothing pass on item",plot.legend[[item]],"\n")
+        for ( j in 2:(length(vect)-1) ) {
+            newvec[[j]] <- 0.25*vect[[j-1]] + 0.50*vect[[j]] + 0.25*vect[[j+1]]
+        }
+        vect <- newvec
+    }
+    newvec
+}
+if ( ismooth == 1 ) {
+  plot.data.y <- lapply(X=seq(1,length(plot.data.y)), FUN=smoother) 
+}
+
+### Fourier Filtering to also clean up oversampled data
+fourier.filter <- function( item ) {
+    vect <- plot.data.y[[item]]
+    iff <- plot.ismooth[[item]]
+    newvec <- vect
+
+    if ( iff != 0 ) {
+        vect.inv <- fft(vect)
+        # filter out the top 10%
+        clear.range.start <- floor(1 * length(vect.inv) / 10)
+        clear.range.end <- floor(9 * length(vect.inv) / 10)
+#       print(paste("Filtering out",clear.range.start,clear.range.end))
+        vect.inv[seq(clear.range.start,clear.range.end)] = 0 + 0i
+
+        newvec <- fft(vect.inv, inverse=TRUE)/length(vect.inv)
+
+    }
+    Re(newvec)
+}
+if ( ismooth == 2 ) {
+  plot.data.y <- lapply(X=seq(1,length(plot.data.y)), FUN=fourier.filter) 
+}
 
 ### determine day boundaries so the plot's gridlines will match up
 plot.data.firstday <- as.POSIXlt(plot.data.x[[1]])
