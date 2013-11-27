@@ -243,7 +243,16 @@ sub get_node_data
         my $exe = $options{torquebin} . '/pbsnodes -x';
         $inputxml = `$exe`;
     }
+    if ( $inputxml )
+    {
+        $inputxml =~ s/(&)/$1amp;/g;    # Torque does not generate valid XML
+                                        # if job data contains ampersands
     $nodeinfo = XMLin($inputxml)->{Node};
+    }
+    else
+    {
+        $nodeinfo = {};
+    }
     return $nodeinfo;
 }
 
@@ -271,6 +280,8 @@ sub get_job_data
     }
     if ( $inputxml )    # empty queue will cause XMLin to break
     {
+        $inputxml =~ s/(&)/$1amp;/g;    # Torque does not generate valid XML
+                                        # if job data contains ampersands
         $jobinfo = XMLin($inputxml)->{Job} or $jobinfo = {};
     }
     else
