@@ -1,0 +1,217 @@
+#!/usr/bin/env perl
+################################################################################
+#  splunktrace - Get the system logs being generated across all job nodes while
+#   a job was running.  VERY much in beta stage!
+#
+#  Glenn K. Lockwood, San Diego Supercomputer Center            November 2013
+################################################################################
+
+use strict;
+use warnings;
+
+### Gnarly hack to bring in all the necessary libs required by this application.
+### Currently only works on Gordon
+use lib '/home/diag/glock/perl5/lib/perl5';
+
+### Read in Splunk credentials and other runtime parameters from ~/.splunkconf
+sub read_config {
+    my $config = {
+        blacklist   =>  'sdsc_stats pam_unix ntpd ntpdate sshd crond '
+                     .  'audit 411-alert-handler suppressed anacron postfix '
+                     .  '411_alert',
+        nodesuffix  =>  '.sdsc.edu',
+        app         =>  'search',
+        fe          =>  'trestles-fe1.sdsc.edu gordon-fe2.sdsc.edu',
+        joblifetime =>  300,
+        };
+    open CONF, "<" . $ENV{'HOME'} . "/.splunkconf" or die;
+    while ( my $line = <CONF> )
+    {
+        next if $line =~ m/^#/;
+        next unless $line =~ m/^\s*(.*?)\s*=\s*(.*)\s*$/;
+        $config->{$1} = $2;
+    }
+    close CONF;
+
+    ### Set system-specific information if not provided
+    use Sys::Hostname;
+    my $host = hostname();
+    if ( ! $config->{'system'} ) {
+        if ( $host =~ m/^trestles-/ )
+        {
+            $config->{'system'} = 'trestles';
+            $config->{pbs_suffix} = '.trestles-fe1.sdsc.edu';
+        }
+        elsif ( $host =~ m/^(gordon|gcn)-/ )
+        {
+            $config->{'system'} = 'gordon';
+            $config->{pbs_suffix} = '.gordon-fe2.local';
+        }
+    }
+    die "Unknown system" if !$config->{'system'};
+    die "Unknown system pbs_suffix" if !$config->{'pbs_suffix'};
+
+    return $config;
+}
+
+sub query_from_trace {
+    my $config = shift;
+    my $tracefile = shift;
+    open(TRACE, "<$tracefile") or die;
+    my ( $start_time, $end_time );
+
+    ### Parse entire job trace to extract necessary information to build the 
+    ### Splunk query
+    my @hosts;
+    while ( my $line = <TRACE> )
+    {
+        # Figure out the first and last relevant timestamp for this job
+        if ( $line =~ m{^\s*(\d+/\d+/\d+) (\d+:\d+:\d+)\s+.*Job Run} 
+        &&   !defined($start_time) )
+        {
+            $start_time = $1 . ":" . $2;
+        }
+        elsif ( $line =~ m{^\s*(\d+/\d+/\d+) (\d+:\d+:\d+)\s+} )
+        {
+            $end_time= $1 . ":" . $2;
+        }
+
+        # Extract the nodelist
+        if ( $line =~ m/exec_host=(\S+)/ )
+        {
+            my $hosts = $1;
+            my @hostlist = split( m{/\d+\+?}, $hosts );
+            my %hosts;
+            $hosts{$_} = 1 foreach @hostlist;
+            @hosts = keys(%hosts)
+        }
+
+    }
+    close(TRACE);
+
+    die if !defined($end_time);
+    if ( $end_time =~ m{^\s*(\d+)/(\d+)/(\d+):(\d+):(\d+):(\d+)} )
+    {
+        use Time::Piece;
+#       print "end_time is $end_time\n";
+        my $t = Time::Piece->strptime( $end_time, "%m/%d/%Y:%H:%M:%S" );
+        $t -= $config->{joblifetime};
+        $end_time = $t->strftime("%m/%d/%Y:%H:%M:%S");
+    }
+
+    ### Build the splunk query based on the job trace
+    my $n = 0;
+    my $buf = "";
+    foreach my $host ( @hosts )
+    {
+        if ( $n == 0 ) { $buf .= "("; }
+        elsif ( $n > 0 ) { $buf .= " OR "; }
+        $buf .= sprintf( "host=%s%s", $host, $config->{nodesuffix} );
+        $n++;
+    }
+    my @blacklist = split( m/\s+/, $config->{blacklist} );
+    $buf .= ") AND NOT (";
+    $buf .= join( " OR ", @blacklist );
+    $buf .= sprintf(") earliest=%s latest=%s", $start_time, $end_time);
+
+    return "search " . $buf;
+}
+
+sub query_splunk {
+    use LWP::UserAgent;
+    use Net::SSL;
+    use XML::Simple;
+    use URI::Escape;
+
+    $ENV{PERL_LWP_SSL_VERIFY_HOSTNAME} = 0; # work around invalid certs on our splunk server
+
+    my $config = shift;
+    my $query = shift;
+
+    my $base_url = sprintf('https://%s:%d', $config->{host}, $config->{port});
+    my $username = $config->{user};
+    my $password = $config->{password};
+    my $app      = $config->{app};
+
+    my $XML = XML::Simple->new();
+    my $ua = LWP::UserAgent->new();
+
+    my ($post, $raw_results, $results);
+
+    my @output;
+
+    ### Request a session key 
+    $post = $ua->post( 
+        sprintf("%s/servicesNS/admin/%s/auth/login", $base_url, $app ),
+             Content => sprintf( "username=%s&password=%s", $username, $password ) );
+#       "$base_url/servicesNS/admin/$app/auth/login",
+#       "username=$username&password=$password");
+    $raw_results = $post->content;
+    $results = $XML->XMLin($raw_results) or die;
+
+    # Extract a session key
+    my $ssid = "Splunk ".$results->{sessionKey};
+    print "Session_Key(Authorization): $ssid\n";
+
+    # Add session key to header for all future calls
+    $ua->default_header( 'Authorization' => $ssid );
+
+    # Perform a search
+    $post = $ua->post(
+             "$base_url/servicesNS/$username/$app/search/jobs", 
+             Content => "search=".uri_escape($query)
+          );
+    $raw_results = $post->content;
+    $results = $XML->XMLin($raw_results);
+
+    # Check for valid search
+    unless (defined($results->{sid})) {
+       print "Unable to run command\n$raw_results\n";
+       exit;
+    }
+
+    # Get Search ID
+    my $sid = $results->{sid};
+    print  "SID(Search ID)            : $sid\n";
+
+    # Check the search Status
+    # Repeat until isDone is 1
+    #   <s:key name="isDone">1</s:key>
+    my $done;
+    do {
+       sleep(2);
+       $post = $ua->get(
+                "$base_url/services/search/jobs/$sid/"
+             );
+       $raw_results = $post->content;
+       if ( $raw_results =~ /name="isDone">([^<]*)</ ) {
+          $done = $1;
+       } else {
+          $done = '-';
+       }
+       print "Progress Status:$done: Running\n";
+    } until ($done eq "1");
+
+    # Get Search Results
+    #$post = $ua->get( "$base_url/services/search/jobs/$sid/results?output_mode=csv&count=0");
+    $post = $ua->get( "$base_url/services/search/jobs/$sid/results?count=0");
+    $raw_results = $post->content;
+    $results = $XML->XMLin($raw_results);
+
+    foreach my $result ( @{$results->{result}} )
+    {
+        foreach my $field ( @{$result->{field}} ) {
+            next unless $field->{k} eq '_raw';
+            my $content = $field->{v}->{content} . "\n";
+            $content =~ s/$_ Message forwarded from/::/ foreach split(m/\s+/, $config->{fe});
+            push(@output, $content);
+        }
+    }
+    return(reverse(@output));
+}
+
+################################################################################
+my $config = read_config();
+my $query = query_from_trace( $config, $ARGV[0] );
+print $query . "\n";
+print $_ foreach query_splunk( $config, $query );
