@@ -198,6 +198,12 @@ sub query_splunk {
     $raw_results = $post->content;
     $results = $XML->XMLin($raw_results);
 
+    # If only one results, we get a hashref instead of an array ref
+    if ( ref($results->{result}) eq "HASH" )
+    {
+        $results->{result} = [ $results->{result} ];
+    }
+
     foreach my $result ( @{$results->{result}} )
     {
         foreach my $field ( @{$result->{field}} ) {
