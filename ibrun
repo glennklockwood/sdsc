@@ -1,0 +1,191 @@
+#!/usr/bin/env perl
+#
+################################################################################
+# ibrun - SDSC's re-implementation of the ibrun wrapper for the various MPI
+#         launchers
+#
+# Glenn K. Lockwood, San Diego Supercomputer Center             December 2013
+################################################################################
+#
+use strict;
+use warnings;
+use Sys::Hostname;
+use Getopt::Long;
+
+use constant CONTACT => 'Contact help@xsede.org for additional assistance.';
+
+my $options; 
+
+### Hacks for MVAPICH2
+$ENV{MV2_USE_UD_HYBRID} = 0 unless $ENV{MV2_USE_UD_HYBRID};
+$ENV{MV2_USE_OLD_BCAST} = 1 unless $ENV{MV2_USE_OLD_BCAST};
+$ENV{MV2_HOMOGENEOUS_CLUSTER} = 0 unless $ENV{MV2_HOMOGENEOUS_CLUSTER};
+$ENV{MV2_USE_HUGEPAGES} = 0 unless $ENV{MV2_USE_HUGEPAGES};
+
+### Pull in default options from the resource manager
+$options->{rm_nodefile} = $ENV{PBS_NODEFILE};
+$options->{rm_nodes}    = $ENV{PBS_NUM_NODES};
+$options->{rm_ppn}      = $ENV{PBS_NUM_PPN};
+$options->{rm_jobid}    = $ENV{PBS_JOBID};
+$options->{mpi_srq_size}        = 2048;
+$options->{mpi_default_timeout} = 23;
+$options->{n}           = $options->{rm_nodes} * $options->{rm_ppn};
+
+### Let command-line options override 
+$options = get_options( $@ARGV );
+
+### Determine MPI stack to be used
+$options->{mpi_stack} = "mvapich2";
+$options->{mpi_launcher} = "mpirun_rsh";
+
+### Load nodelist into an array
+my $nodelist = load_nodefile( $options->{rm_nodefile} )
+
+### Build the nodefile for this MPI job
+if ( $options->{o} && $options->{o} > 0 )
+{
+    # ...construct a truncated and offset nodefile
+    bailout( 1, "This feature is not yet available.\n" )
+}
+elsif ( $options->{npernode} )
+{
+    # do some last-minute error checking
+    $options->{nodefile} = gen_hybrid_nodefile( $nodelist, $options->{npernode} );
+}
+else
+{
+    $options->{nodefile} = $options->{rm_nodefile};
+}
+
+my $run_string = "A terrible error has occurred.  " . CONTACT;
+if ( $options->{mpi_stack} eq "mvapich2" )
+{
+    if ( $options->{mpi_launcher} eq 'mpirun_rsh' )
+    {
+        $run_string = "mpirun_rsh -np %d -hostfile %s %s";
+    }
+    elsif ( $options->{mpi_launcher} eq 'mpiexec.hydra' )
+    {
+    }
+    else
+    {
+    }
+}
+elsif ( $options->{mpi_stack} eq "openmpi" )
+{
+    bailout( 1, "This feature is not yet available.\n" )
+}
+elsif ( $options->{mpi_stack} eq "mpich2" )
+{
+    bailout( 1, "This feature is not yet available.\n" )
+}
+else
+{
+    bailout(2, sprintf( STDERR "Unknown MPI stack '%s'.  %s",
+        ($options->{mpi_stack} ? $options->{mpi_stack} : "????"), CONTACT) );
+}
+
+system();
+
+################################################################################
+### Subroutines
+################################################################################
+
+### Load nodelist from nodefile into an array and return it
+sub load_nodefile()
+{
+    my $nodefile = shift;
+    open (NODEFILE, $nodefile) or bailout( 1, "Unable to open nodefile $nodefile");
+
+    my @nodelist;
+    
+    while ( my $line = <NODEFILE> )
+    {
+        $line =~ m/^\s*(\S+)\s*$/;
+        push( @nodelist, $1 );
+    }
+    return \@nodelist;
+}
+
+### Rebuild a nodefile based on user input, return its location
+sub gen_hybrid_nodefile
+{
+    use File::Temp;
+    my $nodelist = shift;
+    my $npernode = shift;
+    
+    my ($fh, $filename) = tempfile();
+
+    foreach my $node ( @$nodelist )
+    {
+        foreach ( 1 .. $npernode )
+        {
+            print $fh $node;
+        }
+    }
+    close($fh);
+
+    return $filename;
+}
+
+### Parse command line input and check for errors
+sub get_options
+{
+    my $argv = shift;
+    use Getopt::Long;
+    Getopt::Long::Configure( "require_order" );
+    my %options = ( o => 0 );
+    if ( @$argv > 0 ) 
+    {
+        GetOptions(
+            "n|np=i"        =>  \$options{n}, 
+            "N=i"           =>  \$options{num_nodes},
+            "o=i"           =>  \$options{o},
+            "npernode=i"    =>  \$options{npernode},
+        );
+    }
+    return \%options;
+}
+
+sub bailout
+{
+    my $errno = shift;
+    my $errmsg = shift;
+    print STDERR $errmsg;
+    exit $errno;
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+ibrun - launch MPI jobs from an implementation-independent command
+
+=head1 DESCRIPTION
+
+This application launches an MPI job using a simple user interface that automatically configures the implementation- and system-specific features on whichever MPI stack the user wants to use.
+
+-n, -np <n>
+    launch n MPI ranks (default: use all cores provided by resource manager)
+
+-o, --offset <n>
+    assign MPI ranks starting at the nth slot provided by the resource manager
+    (default: 0)
+
+--npernode <n>
+    only launch n MPI ranks per node
+
+-h 
+    print this message
+
+=head1 KNOWN BUGS
+
+No known issues.
+
+=head1 AUTHOR
+
+Glenn K. Lockwood (glock@sdsc.edu)
+
+=cut
