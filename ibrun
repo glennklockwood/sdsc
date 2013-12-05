@@ -1,18 +1,19 @@
 #!/usr/bin/env perl
-#
 ################################################################################
 # ibrun - SDSC's re-implementation of the ibrun wrapper for the various MPI
 #         launchers
 #
 # Glenn K. Lockwood, San Diego Supercomputer Center             December 2013
 ################################################################################
-#
+
 use strict;
 use warnings;
 use Sys::Hostname;
 use Getopt::Long;
+use POSIX;
 
 use constant CONTACT => 'Contact help@xsede.org for additional assistance.';
+use constant ENABLE_DEBUGGING => 1;
 
 my $options; 
 
@@ -24,51 +25,74 @@ $ENV{MV2_USE_HUGEPAGES} = 0 unless $ENV{MV2_USE_HUGEPAGES};
 
 ### Pull in default options from the resource manager
 $options->{rm_nodefile} = $ENV{PBS_NODEFILE};
-$options->{rm_nodes}    = $ENV{PBS_NUM_NODES};
+$options->{rm_num_nodes}= $ENV{PBS_NUM_NODES};
 $options->{rm_ppn}      = $ENV{PBS_NUM_PPN};
 $options->{rm_jobid}    = $ENV{PBS_JOBID};
 $options->{mpi_srq_size}        = 2048;
 $options->{mpi_default_timeout} = 23;
-$options->{n}           = $options->{rm_nodes} * $options->{rm_ppn};
+$options->{num_ranks}   = $options->{rm_num_nodes} * $options->{rm_ppn};
+
+### Machine-specific stuff
+{
+    my $hostname = hostname();
+    if ( $hostname =~ m/^(gcn-|gordon-)/ ) { 
+        $options->{sys_ppn}         = 16;
+        $options->{sys_max_nodes}   = 128;
+    }
+    elsif ( $hostname =~ m/^trestles-/ ) {
+        $options->{sys_ppn}         = 32;
+        $options->{sys_max_nodes}   = 32;
+    }
+    elsif ( $hostname =~ m/^tscc-/ ) {
+        $options->{sys_ppn}         = 16;
+        $options->{sys_max_nodes}   = 9999999;
+    }
+}
 
 ### Let command-line options override 
-$options = get_options( $@ARGV );
+$options = get_options( \@ARGV, $options );
+$options->{cmd} = shift(@ARGV);
+$options->{cmd_args} = @ARGV;
 
 ### Determine MPI stack to be used
 $options->{mpi_stack} = "mvapich2";
 $options->{mpi_launcher} = "mpirun_rsh";
 
 ### Load nodelist into an array
-my $nodelist = load_nodefile( $options->{rm_nodefile} )
+my $nodelist = load_nodefile( $options->{rm_nodefile} );
 
 ### Build the nodefile for this MPI job
-if ( $options->{o} && $options->{o} > 0 )
+if ( $options->{nodefile_offset} && $options->{nodefile_offset} > 0 )
 {
     # ...construct a truncated and offset nodefile
-    bailout( 1, "This feature is not yet available.\n" )
+    bailout( 1, "This feature is not yet available.\n" );
 }
-elsif ( $options->{npernode} )
+elsif ( ($options->{num_nodes} * $options->{npernode}) == ($options->{rm_num_nodes} * $options->{rm_ppn}) )
 {
-    # do some last-minute error checking
-    $options->{nodefile} = gen_hybrid_nodefile( $nodelist, $options->{npernode} );
+    dprintf("no hostfile mod needed\n");
+    $options->{nodefile} = $options->{rm_nodefile};
 }
 else
 {
-    $options->{nodefile} = $options->{rm_nodefile};
+    dprintf(sprintf("hostfile hacking needed: %d\n", $options->{npernode} ));
+    $options->{nodefile} = 
+        gen_hybrid_nodefile( $nodelist, $options );
 }
 
-my $run_string = "A terrible error has occurred.  " . CONTACT;
+my $run_string = 'echo "A terrible error has occurred.  ' . CONTACT . '" >&2';
 if ( $options->{mpi_stack} eq "mvapich2" )
 {
     if ( $options->{mpi_launcher} eq 'mpirun_rsh' )
     {
-        $run_string = "mpirun_rsh -np %d -hostfile %s %s";
+        $run_string = "mpirun_rsh -np %d -hostfile %s %s %s";
     }
     elsif ( $options->{mpi_launcher} eq 'mpiexec.hydra' )
     {
+        $run_string = "mpiexec.hydra -np %d -hostfile %s %s %s";
     }
     else
     {
+        bailout( 2, "Unknown/undefined MPI launcher" );
     }
 }
 elsif ( $options->{mpi_stack} eq "openmpi" )
@@ -81,18 +105,30 @@ elsif ( $options->{mpi_stack} eq "mpich2" )
 }
 else
 {
-    bailout(2, sprintf( STDERR "Unknown MPI stack '%s'.  %s",
+    bailout(2, sprintf( "Unknown MPI stack '%s'.  %s",
         ($options->{mpi_stack} ? $options->{mpi_stack} : "????"), CONTACT) );
 }
 
-system();
+
+my $cmd_string = sprintf( $run_string,
+    $options->{num_ranks},          # number of MPI ranks
+    $options->{nodefile},           # nodefile location
+    "",                             # other mpirun parameters
+    $options->{cmd},                # command itself
+    $options->{cmd_args}            # command options
+);
+
+#unlink($options->{nodefile});           # delete the nodefile
+printf( "Nodefile is %s\n", $options->{nodefile} );
+printf( "Command string is [%s]\n", $cmd_string );
+#system( $cmd_string );
 
 ################################################################################
 ### Subroutines
 ################################################################################
 
 ### Load nodelist from nodefile into an array and return it
-sub load_nodefile()
+sub load_nodefile
 {
     my $nodefile = shift;
     open (NODEFILE, $nodefile) or bailout( 1, "Unable to open nodefile $nodefile");
@@ -112,15 +148,61 @@ sub gen_hybrid_nodefile
 {
     use File::Temp;
     my $nodelist = shift;
-    my $npernode = shift;
+    my $options = shift;
     
-    my ($fh, $filename) = tempfile();
+    my ($fh, $filename) = File::Temp::tempfile();
 
-    foreach my $node ( @$nodelist )
+    my $npernode = $options->{npernode};
+    my @my_npernode;
+
+    # Convert nodelist into a list of unique nodes
+    my %unique_nodes;
+    $unique_nodes{$_} = 1 foreach @$nodelist;
+    my @unique_nodes = keys(%unique_nodes);
+
+    if ( scalar(@unique_nodes) != $options->{num_nodes} )  # assert 
     {
-        foreach ( 1 .. $npernode )
+        bailout( -5, 
+            sprintf("Assertion failed in gen_hybrid_nodefile:\n"
+            ."length(nodelist) != options{num_nodes}\n"
+            ."%d != %d\n", scalar(@unique_nodes), $options->{num_nodes}) );
+    }
+
+    # Positive npernode means npernode divides evenly into num_nodes.  Just 
+    # print $npernode copies per node into the new nodefile.
+    if ( $npernode > 0 )
+    {
+        @my_npernode = ($npernode) x $options->{num_nodes};
+    }
+    # Negative npernode means npernode does not divide evenly into num_nodes
+    elsif ( $npernode < 0 )
+    {
+        dprintf( "hacking hostfile...\n" );
+        $npernode = abs($npernode);
+        @my_npernode = ($npernode) x $options->{num_nodes};
+        my $num_ranks = $options->{num_ranks};
+        my $num_nodes = $options->{num_nodes};
+        
+        # figure out which nodes need to take up the slack
+        dprintf( "remainder is %d = %d - %d * %d\n", 
+            ($num_ranks - $num_nodes * $npernode),
+            $num_ranks,
+            $num_nodes,
+            $npernode );
+        foreach my $i ( 0 .. ($options->{num_nodes}-1) )
         {
-            print $fh $node;
+            $my_npernode[$i]++ if $i < ($num_ranks - $num_nodes * $npernode);
+        }
+    }
+
+    ### Convert our nodelist and my_npernode into nodefiles
+    printf "got %d unique nodes\n", scalar(@unique_nodes);
+    foreach my $i ( 0 .. $#unique_nodes )
+    {
+        printf "got %d ranks on node %d\n", $my_npernode[$i], $i;
+        foreach ( 1 .. $my_npernode[$i] )
+        {
+            print $fh $unique_nodes[$i] . "\n";
         }
     }
     close($fh);
@@ -128,22 +210,85 @@ sub gen_hybrid_nodefile
     return $filename;
 }
 
-### Parse command line input and check for errors
+### Parse command line input and check for errors.  This will be called
+### AFTER the resource manager's paramaters have already been loaded into
+### the options hash.
 sub get_options
 {
     my $argv = shift;
+    my $old_options = shift;
+    my %new_options;
     use Getopt::Long;
     Getopt::Long::Configure( "require_order" );
-    my %options = ( o => 0 );
     if ( @$argv > 0 ) 
     {
         GetOptions(
-            "n|np=i"        =>  \$options{n}, 
-            "N=i"           =>  \$options{num_nodes},
-            "o=i"           =>  \$options{o},
-            "npernode=i"    =>  \$options{npernode},
+            "o=i"           =>  \$new_options{nodefile_offset},
+            "N=i"           =>  \$new_options{num_nodes},
+            "n|np=i"        =>  \$new_options{num_ranks}, 
+            "npernode=i"    =>  \$new_options{npernode},
         );
     }
+
+    # Merge in the user-provided values with the pre-set values.  Overwrite old
+    # pre-set values with user-provided when duplicates occur.
+    my %options = ( %$old_options, %new_options );
+
+    ### If user did not specify certain parameters, copy the values from what
+    ### the resource manager (rm) provided
+    if ( !$options{nodefile_offset} ) { 
+        $options{nodefile_offset} = 0; 
+    }
+
+    # how many nodes the job will use
+    if ( !$options{num_nodes} ) {
+        $options{num_nodes} = $options{rm_num_nodes}
+    }
+
+    # how many MPI ranks total the job will use
+    if ( !$options{num_ranks} ) {
+        $options{num_ranks} = $options{num_nodes} * $options{sys_ppn};
+    }
+
+    # how many MPI ranks per node the job will use.  If this is NEGATIVE, then 
+    # the division is uneven and the node breakdown requires a lot more logic
+    my $remainder = $options{num_ranks} % $options{num_nodes};
+    if ( !$options{npernode} )
+    {
+        if ( $remainder == 0 ) {
+            $options{npernode} = $options{num_ranks} / $options{num_nodes};
+        }
+        else {
+            $options{npernode} = -1 * floor($options{num_ranks} 
+                                    / $options{num_nodes});
+        }
+    }
+    elsif ( $remainder != 0 ) {
+        $options{npernode} = -1 * floor($options{num_ranks} 
+                                / $options{num_nodes});
+    }
+
+    ### Check the sanity of the inputted parameters
+    if ( $options{npernode} > $options{sys_ppn} ) 
+    {
+        # don't bail here; some codes have a lightweight management rank that 
+        # in addition to the one-rank-per-core compute ranks
+        printf( STDERR 
+            "WARNING: Your job will put more ranks on each node (%d) than the "
+            ."cores physically available to each node (%d)\n",
+            $options{npernode}, $options{sys_ppn} );
+    }
+
+    if ( $options{num_nodes} > $options{sys_max_nodes} )
+    {
+        bailout(3, sprintf("ERROR: Your job requests more nodes (%d) than the "
+            ."maximum allowed per job (%d)",
+            $options{num_nodes},
+            $options{sys_max_nodes} ) );
+    }
+
+    ### at this point, num_ranks, num_nodes, and npernode are guaranteed to 
+    ### exist and be well-defined at this point
     return \%options;
 }
 
@@ -153,6 +298,12 @@ sub bailout
     my $errmsg = shift;
     print STDERR $errmsg;
     exit $errno;
+}
+
+sub dprintf
+{
+    return unless ENABLE_DEBUGGING;
+    printf( @_ );
 }
 
 __END__
