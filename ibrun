@@ -15,13 +15,7 @@ use POSIX;
 use constant CONTACT => 'Contact help@xsede.org for additional assistance.';
 use constant ENABLE_DEBUGGING => 1;
 
-my $options; 
-
-### Hacks for MVAPICH2
-$ENV{MV2_USE_UD_HYBRID} = 0 unless $ENV{MV2_USE_UD_HYBRID};
-$ENV{MV2_USE_OLD_BCAST} = 1 unless $ENV{MV2_USE_OLD_BCAST};
-$ENV{MV2_HOMOGENEOUS_CLUSTER} = 0 unless $ENV{MV2_HOMOGENEOUS_CLUSTER};
-$ENV{MV2_USE_HUGEPAGES} = 0 unless $ENV{MV2_USE_HUGEPAGES};
+our $options; 
 
 ### Pull in default options from the resource manager
 $options->{sys_rm}      = 'Torque';
@@ -29,9 +23,26 @@ $options->{rm_nodefile} = $ENV{PBS_NODEFILE};
 $options->{rm_num_nodes}= $ENV{PBS_NUM_NODES};
 $options->{rm_ppn}      = $ENV{PBS_NUM_PPN};
 $options->{rm_jobid}    = $ENV{PBS_JOBID};
+$options->{rm_num_ranks}   = $options->{rm_num_nodes} * $options->{rm_ppn};
 $options->{mpi_srq_size}        = 2048;
 $options->{mpi_default_timeout} = 23;
-$options->{rm_num_ranks}   = $options->{rm_num_nodes} * $options->{rm_ppn};
+
+$options->{env_hacks}->{mvapich2} = {
+    MV2_USE_UD_HYBRID => 0,
+    MV2_USE_OLD_BCAST => 1,
+    MV2_HOMOGENEOUS_CLUSTER => 0,
+    MV2_USE_HUGEPAGES => 0,
+    MV2_DEFAULT_TIME_OUT => $options->{mpi_default_timeout},
+};
+$options->{env_hacks}->{openmpi} = {
+    OMPI_MCA_btl => 'self,sm,openib',
+    OMPI_MCA_btl_openib_use_srq => 1,
+    OMPI_MCA_btl_openib_ib_timeout => $options->{mpi_default_timeout},
+    OMPI_MCA_btl_openib_use_rd_max => $options->{mpi_srq_size},
+};
+$options->{env_hacks}->{mpich} = {
+    # nothing here
+};
 
 ### Machine-specific stuff
 {
@@ -48,75 +59,27 @@ $options->{rm_num_ranks}   = $options->{rm_num_nodes} * $options->{rm_ppn};
         $options->{sys_ppn}         = 16;
         $options->{sys_max_nodes}   = 9999999;
     }
+    else {
+        # bailout( -1, "ERROR: ibrun is running on an unknown system.  " . CONTACT );
+        $options->{sys_ppn}         = 32;
+        $options->{sys_max_nodes}   = 32;
+    }
 }
 
-### Let command-line options override 
-$options = get_options( \@ARGV, $options );
+### Let command-line options override the defaults defined above
+$options = get_options( \@ARGV );
 $options->{cmd} = shift(@ARGV);
 $options->{cmd_args} = \@ARGV;
 
 ### Determine MPI stack to be used
-$options->{mpi_stack} = "mvapich2";
+$options->{mpi_stack} = "openmpi";
 $options->{mpi_launcher} = "mpirun_rsh";
 
-### Load nodelist into an array
-my $nodelist = load_nodefile( $options->{rm_nodefile} );
-
 ### Build the nodefile for this MPI job
-if ( $options->{nodefile_offset} && $options->{nodefile_offset} > 0 )
-{
-    # ...construct a truncated and offset nodefile
-    bailout( 1, "This feature is not yet available.\n" );
-}
-elsif ( ($options->{num_nodes} * $options->{npernode}) == ($options->{rm_num_nodes} * $options->{rm_ppn}) )
-{
-    dprintf("no hostfile mod needed\n");
-    $options->{nodefile} = $options->{rm_nodefile};
-}
-else
-{
-    dprintf(sprintf("hostfile hacking needed: %d\n", $options->{npernode} ));
-    $options->{nodefile} = 
-        gen_hybrid_nodefile( $nodelist, $options );
-}
+gen_nodefile( );
 
-my $run_string = 'echo "A terrible error has occurred.  ' . CONTACT . '" >&2';
-if ( $options->{mpi_stack} eq "mvapich2" )
-{
-    if ( $options->{mpi_launcher} eq 'mpirun_rsh' )
-    {
-        $run_string = "mpirun_rsh -np %d -hostfile %s %s";
-    }
-    elsif ( $options->{mpi_launcher} eq 'mpiexec.hydra' )
-    {
-        $run_string = "mpiexec.hydra -np %d -hostfile %s %s";
-    }
-    else
-    {
-        bailout( 2, "Unknown/undefined MPI launcher\n" );
-    }
-}
-elsif ( $options->{mpi_stack} eq "openmpi" )
-{
-    bailout( 1, "This feature is not yet available.\n" )
-}
-elsif ( $options->{mpi_stack} eq "mpich2" )
-{
-    bailout( 1, "This feature is not yet available.\n" )
-}
-else
-{
-    bailout(2, sprintf( "Unknown MPI stack '%s'.  %s\n",
-        ($options->{mpi_stack} ? $options->{mpi_stack} : "????"), CONTACT) );
-}
-
-
-my $cmd_string = sprintf( $run_string,
-    $options->{num_ranks},          # number of MPI ranks
-    $options->{nodefile},           # nodefile location
-    "",                             # other mpirun parameters
-    $options->{cmd},                # command itself
-);
+### Construct the appropriate MPI launcher command line
+my $cmd_string = gen_mpirun_cmd( $options );
 
 #unlink($options->{nodefile});           # delete the nodefile
 printf( "Nodefile is %s\n", $options->{nodefile} );
@@ -140,45 +103,67 @@ sub load_nodefile
         $line =~ m/^\s*(\S+)\s*$/;
         push( @nodelist, $1 );
     }
-    return \@nodelist;
+    return @nodelist;
 }
 
-### Rebuild a nodefile based on user input, return its location
-sub gen_hybrid_nodefile
+### Rebuild a nodefile based on user input, return its location.  This 
+### subroutine assumes that num_nodes, npernode are either well-defined, or
+### npernode is negative, num_nodes is well-defined and npernode needs to be
+### recalculated here
+sub gen_nodefile
 {
     use File::Temp;
-    my $nodelist = shift;
-    my $options = shift;
+
+    ### Load nodelist into an array
+    my @nodelist = load_nodefile( $options->{rm_nodefile} );
+    $options->{nodelist} = \@nodelist;
+
+    ### If the user is running a normal job (each MPI rank corresponds to a
+    ### single MPI process on a single core), just bypass all this extra 
+    ### work and just use the nodefile from the resource manager (rm_nodefile)
+    if ( ($options->{num_nodes} * $options->{npernode}) == ($options->{rm_num_nodes} * $options->{rm_ppn}) )
+    {
+        dprintf("no hostfile mod needed\n");
+        $options->{nodefile} = $options->{rm_nodefile};
+        $options->{tpr} = 1;
+        return;
+    }
     
+    ### Otherwise, we need to reconstruct the nodefile.  Start by creating a new
+    ### temporary file...
     my ($fh, $filename) = File::Temp::tempfile();
 
     my $npernode = $options->{npernode};
     my @my_npernode;
+    $options->{my_npernode} = \@my_npernode;
 
     #### Convert nodelist into a list of unique nodes with order preserved
     my @unique_nodes;
-    foreach my $node ( @$nodelist ) {
+    foreach my $node ( @nodelist ) {
         push( @unique_nodes, $node ) unless grep {$_ eq $node} @unique_nodes;
     }
+    $options->{unique_nodes} = \@unique_nodes;
 
     ### Make sure the nodelist contains the same number of nodes as the 
     ### resource manager says it should contain
     if ( scalar(@unique_nodes) != $options->{rm_num_nodes} ) {
+        close($fh);
         bailout( -5, sprintf( "ERROR: assert failed: #nodes (%d) in nodefile "
             ."(%s) inconsistent with nodecount (%d) from %s\n",
             scalar(@unique_nodes),
             $options->{rm_nodefile},
-            $options->{rm_num_nodes} ) );
+            $options->{rm_num_nodes} ),
+            $options);
     }
 
     ### Make sure the user isn't requesting more nodes that he or she was given
     if ( scalar(@unique_nodes) < $options->{num_nodes} )
     {
         close($fh);
-        unlink($filename);
         bailout( 4, 
             sprintf("ERROR: Your MPI job requested %d nodes but %s only provided %d.\n",
-            $options->{num_nodes}, $options->{sys_rm}, scalar(@unique_nodes) ) );
+            $options->{num_nodes}, $options->{sys_rm}, scalar(@unique_nodes) ),
+            $options);
     }
 
     # -N supercedes the number of nodes given by the batch system
@@ -189,8 +174,12 @@ sub gen_hybrid_nodefile
     if ( $npernode > 0 )
     {
         @my_npernode = ($npernode) x $options->{num_nodes};
+        $options->{tpr} = $options->{rm_ppn} / $npernode;
     }
-    # Negative npernode means npernode does not divide evenly into num_nodes
+    # Negative npernode means npernode does not divide evenly into num_nodes.
+    # We need to figure out what npernode should be on each node.  This also
+    # suggests that the job geometry is not meant to logically map to the 
+    # available cores per node, so we assume threads per rank (tpr) = 1
     elsif ( $npernode < 0 )
     {
         dprintf( "hacking hostfile...\n" );
@@ -209,13 +198,25 @@ sub gen_hybrid_nodefile
         {
             $my_npernode[$i]++ if $i < ($num_ranks - $num_nodes * $npernode);
         }
+        $options->{tpr} = 1;
+    }
+    ### At this point the threads-per-rank should be known.  Check its sanity:
+    if ( $ENV{OMP_NUM_THREADS} && $ENV{OMP_NUM_THREADS} != $options->{tpr} )
+    {
+        printf( STDERR 
+            "WARNING: Your job geometry appears to suggest that you want %d "
+            ."threads per MPI rank, but your OMP_NUM_THREADS is %d.  This will "
+            ."cause thread binding to be disabled.\n",
+            $options->{tpr}, $ENV{OMP_NUM_THREADS} );
+        $options->{tpr} = -1;
     }
 
     ### Convert our nodelist and my_npernode into nodefiles
     dprintf("Got %d unique nodes\n", $nodes_to_use);
     foreach my $i ( 0 .. ($nodes_to_use-1) )
     {
-        printf "got %d ranks on node %d\n", $my_npernode[$i], $i;
+        dprintf( "Got %d ranks on node %d with %d threads each\n", 
+            $my_npernode[$i], $i, $options->{tpr} );
         foreach ( 1 .. $my_npernode[$i] )
         {
             print $fh $unique_nodes[$i] . "\n";
@@ -223,7 +224,86 @@ sub gen_hybrid_nodefile
     }
     close($fh);
 
-    return $filename;
+    $options->{nodefile} = $filename;
+    return;
+}
+
+### Generate the actual "mpirun -n X ..." line to be executed
+sub gen_mpirun_cmd
+{
+    my $launch_cmd = "echo 'ERROR: No MPI launcher found' >&2; echo ";
+
+    my $mpi_stack = $options->{mpi_stack};
+
+    # Load the env variables we want to hack in for our specific MPI stack
+    my $env_hacks;
+    if ( $options->{env_hacks}->{$mpi_stack} ) { 
+        $env_hacks = gen_env($options->{env_hacks}->{$mpi_stack});
+    }
+
+    ### MVAPICH2 ###############################################################
+    if ( $options->{mpi_stack} eq "mvapich2" )
+    {
+        if ( $options->{mpi_launcher} eq 'mpirun_rsh' )
+        {
+            $launch_cmd = "mpirun_rsh";
+            $options->{mpirun_switches} .= sprintf( "-np %d -hostfile %s ",
+                $options->{num_ranks}, $options->{nodefile} );
+            $options->{mpirun_switches} .= $env_hacks;
+        }
+        elsif ( $options->{mpi_launcher} eq 'mpiexec.hydra' )
+        {
+            $launch_cmd = $env_hacks;
+            $launch_cmd .= "mpiexec.hydra";
+            $options->{mpirun_switches} .= sprintf( "-np %d -hostfile %s ",
+                $options->{num_ranks}, $options->{nodefile} );
+        }
+        else
+        {
+            bailout( 2, "Unknown/undefined MPI launcher\n", $options );
+        }
+    }
+
+    ### OPENMPI ################################################################
+    elsif ( $options->{mpi_stack} eq "openmpi" )
+    {
+        $launch_cmd = $env_hacks;
+        $launch_cmd .= "orterun";
+        $options->{mpirun_switches} .= sprintf( "-n %d -machinefile %s ",
+            $options->{num_ranks}, $options->{nodefile} );
+    }
+
+    ### MPICH2 #################################################################
+    elsif ( $options->{mpi_stack} eq "mpich2" )
+    {
+        bailout( 1, "This feature is not yet available.\n", $options )
+    }
+    else
+    {
+        bailout(2, sprintf( "Unknown MPI stack '%s'.  %s\n",
+            ($options->{mpi_stack} ? $options->{mpi_stack} : "????"), CONTACT),
+            $options );
+    }
+    return sprintf( "%s %s %s",
+        $launch_cmd,
+        $options->{mpirun_switches},
+        $options->{cmd} );
+}
+### Subroutine to turn a hash into an environment variable assignment string.
+### Doesn't overwrite values from the hash is the user already set them
+sub gen_env
+{
+    my $hash = shift;
+    %$hash = ( $options->{ibrun_env}, %$hash ) if $options->{ibrun_env};
+    my $output = "";
+
+    ### only set environment variables that user hasn't already set
+    foreach my $key ( keys(%$hash) ) {
+        unless ( $ENV{$key} ) {
+            $output .= sprintf( "%s=%s ", $key, $hash->{$key} );
+        }
+    }
+    return $output;
 }
 
 ### Parse command line input and check for errors.  This will be called
@@ -232,7 +312,7 @@ sub gen_hybrid_nodefile
 sub get_options
 {
     my $argv = shift;
-    my $old_options = shift;
+    my $old_options = $options;
     my %new_options;
     use Getopt::Long;
     Getopt::Long::Configure( "require_order", "no_ignore_case", 
@@ -245,6 +325,7 @@ sub get_options
             "N=i"           =>  \$new_options{num_nodes},
             "n|np=i"        =>  \$new_options{num_ranks}, 
             "npernode=i"    =>  \$new_options{npernode},
+            "switches=s"    =>  \$new_options{mpirun_switches},
         );
     }
 
@@ -333,8 +414,16 @@ sub get_options
 
     # how many MPI ranks total the job will use
     if ( !$options{num_ranks} ) {
-        dprintf( "Using default num_ranks...\n" );
-        $options{num_ranks} = $options{rm_num_ranks};
+        if ( $options{num_nodes} == $options{rm_num_nodes} ) {
+            dprintf( "Using default num_ranks...\n" );
+            $options{num_ranks} = $options{rm_num_ranks};
+        }
+        # if user provides -N but nothing else, assume she wants all all cores
+        # on those nodes (e.g., for a node_offset job)
+        elsif ( !$options{npernode} ) {
+            dprintf( "Assuming num_ranks = num_nodes * rm_ppn\n" );
+            $options{num_ranks} = $options{num_nodes} * $options{rm_ppn};
+        }
     }
 
     # how many MPI ranks per node the job will use.  If this is NEGATIVE, then 
@@ -379,7 +468,8 @@ sub get_options
         bailout(3, sprintf("ERROR: Your job requests more nodes (%d) than the "
             ."maximum allowed per job (%d)\n",
             $options{num_nodes},
-            $options{sys_max_nodes} ) );
+            $options{sys_max_nodes} ),
+            $options);
     }
 
     ### at this point, num_ranks, num_nodes, and npernode are guaranteed to 
@@ -392,6 +482,17 @@ sub bailout
     my $errno = shift;
     my $errmsg = shift;
     print STDERR $errmsg;
+
+    ### Delete temporary nodefile on error
+    if ( $options
+    &&   $options->{rm_nodefile}
+    &&   $options->{nodefile}
+    &&   $options->{nodefile} ne $options->{rm_nodefile}
+    &&  -e $options->{nodefile} )
+    {
+        unlink $options->{nodefile};
+    }
+
     exit $errno;
 }
 
