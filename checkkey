@@ -1,0 +1,105 @@
+#!/bin/bash
+#
+#  check failure points for password-less SSH within the cluster
+#
+if [ "z$1" == "z" ]
+then
+  echo "syntax: $0 <username>" >&2
+  exit 1
+fi
+
+eval homedir=~$1
+
+if [ ! -d $homedir ]
+then
+  echo "invalid user $1" >&2
+  exit 1
+fi
+
+keydir=${HOME}/.private
+if [ ! -d $keydir ]
+then
+  mkdir -p $keydir || exit -2
+fi
+chmod 0700 $keydir
+
+#
+#  temporarily steal the user's keys
+#
+sudo -u $1 cat $homedir/.ssh/id_rsa > $keydir/id_rsa || exit -1
+sudo -u $1 cat $homedir/.ssh/id_rsa.pub > $keydir/id_rsa.pub || exit -1
+sudo -u $1 cat $homedir/.ssh/authorized_keys > $keydir/authorized_keys || exit -1
+
+error=0
+fixes=""
+#
+#  check if key is encrypted
+#
+if grep -q '^Proc-Type: 4,ENCRYPTED$' $keydir/id_rsa
+then
+  echo "$1 has an encrypted ssh key"
+  fixes="$fixes\nrm ~/.ssh/id_rsa.pub ~/.ssh/id_rsa\nbash /etc/profile.d/ssh-key.sh"
+
+  let "error++"
+fi
+
+#
+#  check if key is in authorized_keys
+#
+if grep -q "$(awk '{printf( "%s *%s", $1, $2) }' $keydir/id_rsa.pub)" $keydir/authorized_keys
+then
+  echo > /dev/null
+else
+  echo "$keydir/id_rsa.pub is not in authorized_keys!"
+  let "error++"
+  fixes="$fixes\ncat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys"
+fi
+
+#
+# end of key check--clean up
+#
+rm -r $keydir/id_rsa $keydir/id_rsa.pub $keydir/authorized_keys
+
+#
+# check for +write permissions
+#
+for file in $homedir $homedir/.ssh $homedir/.ssh/authorized_keys
+do
+  perms="0$(stat -c%a $file 2>/dev/null)"
+  if [ $(($perms & 0022)) -ne 0 ]; then
+    echo "Permissions on $file ($perms) are not appropriate (group or other writeable)"
+    let "error++"
+    fixes="$fixes\nchmod og-w $file"
+  fi
+done
+
+#
+# check for +read permissions
+#
+for file in $homedir/.ssh/id_rsa
+do
+  perms="0$(stat -c%a $file 2>/dev/null)"
+  if [ $(($perms & 0044)) -ne 0 ]; then
+    echo "Permissions on $file ($perms) are not appropriate!"
+    let "error++"
+    fixes="$fixes\nchmod og-r $file"
+  fi
+done
+
+if [ $error -gt 0 ]
+then
+  echo "Errors detected; user will not be able to use MPI" >&2
+  echo ""
+  cat <<EOF
+--------------------------------------------------------------------------------
+-- E-Z paste solution into response to user:
+--------------------------------------------------------------------------------
+This error occurs because your SSH keys are not properly configured.  You can fix these configuration errors by logging in and issuing these commands:
+EOF
+echo -e "$fixes"
+cat <<EOF
+
+Please give these a try and let me know if they do not resolve the problem.
+EOF
+  exit $error
+fi
