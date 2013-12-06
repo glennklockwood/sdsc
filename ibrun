@@ -24,13 +24,14 @@ $ENV{MV2_HOMOGENEOUS_CLUSTER} = 0 unless $ENV{MV2_HOMOGENEOUS_CLUSTER};
 $ENV{MV2_USE_HUGEPAGES} = 0 unless $ENV{MV2_USE_HUGEPAGES};
 
 ### Pull in default options from the resource manager
+$options->{sys_rm}      = 'Torque';
 $options->{rm_nodefile} = $ENV{PBS_NODEFILE};
 $options->{rm_num_nodes}= $ENV{PBS_NUM_NODES};
 $options->{rm_ppn}      = $ENV{PBS_NUM_PPN};
 $options->{rm_jobid}    = $ENV{PBS_JOBID};
 $options->{mpi_srq_size}        = 2048;
 $options->{mpi_default_timeout} = 23;
-$options->{num_ranks}   = $options->{rm_num_nodes} * $options->{rm_ppn};
+$options->{rm_num_ranks}   = $options->{rm_num_nodes} * $options->{rm_ppn};
 
 ### Machine-specific stuff
 {
@@ -52,7 +53,7 @@ $options->{num_ranks}   = $options->{rm_num_nodes} * $options->{rm_ppn};
 ### Let command-line options override 
 $options = get_options( \@ARGV, $options );
 $options->{cmd} = shift(@ARGV);
-$options->{cmd_args} = @ARGV;
+$options->{cmd_args} = \@ARGV;
 
 ### Determine MPI stack to be used
 $options->{mpi_stack} = "mvapich2";
@@ -84,15 +85,15 @@ if ( $options->{mpi_stack} eq "mvapich2" )
 {
     if ( $options->{mpi_launcher} eq 'mpirun_rsh' )
     {
-        $run_string = "mpirun_rsh -np %d -hostfile %s %s %s";
+        $run_string = "mpirun_rsh -np %d -hostfile %s %s";
     }
     elsif ( $options->{mpi_launcher} eq 'mpiexec.hydra' )
     {
-        $run_string = "mpiexec.hydra -np %d -hostfile %s %s %s";
+        $run_string = "mpiexec.hydra -np %d -hostfile %s %s";
     }
     else
     {
-        bailout( 2, "Unknown/undefined MPI launcher" );
+        bailout( 2, "Unknown/undefined MPI launcher\n" );
     }
 }
 elsif ( $options->{mpi_stack} eq "openmpi" )
@@ -105,7 +106,7 @@ elsif ( $options->{mpi_stack} eq "mpich2" )
 }
 else
 {
-    bailout(2, sprintf( "Unknown MPI stack '%s'.  %s",
+    bailout(2, sprintf( "Unknown MPI stack '%s'.  %s\n",
         ($options->{mpi_stack} ? $options->{mpi_stack} : "????"), CONTACT) );
 }
 
@@ -115,13 +116,12 @@ my $cmd_string = sprintf( $run_string,
     $options->{nodefile},           # nodefile location
     "",                             # other mpirun parameters
     $options->{cmd},                # command itself
-    $options->{cmd_args}            # command options
 );
 
 #unlink($options->{nodefile});           # delete the nodefile
 printf( "Nodefile is %s\n", $options->{nodefile} );
-printf( "Command string is [%s]\n", $cmd_string );
-#system( $cmd_string );
+printf( "Command string is [%s] with args [%s]\n", $cmd_string, join(' ', @{$options->{cmd_args}}) );
+#system( $cmd_string, @{$options->{cmd_args}} );
 
 ################################################################################
 ### Subroutines
@@ -131,7 +131,7 @@ printf( "Command string is [%s]\n", $cmd_string );
 sub load_nodefile
 {
     my $nodefile = shift;
-    open (NODEFILE, $nodefile) or bailout( 1, "Unable to open nodefile $nodefile");
+    open (NODEFILE, $nodefile) or bailout( 1, "Unable to open nodefile $nodefile\n");
 
     my @nodelist;
     
@@ -155,18 +155,34 @@ sub gen_hybrid_nodefile
     my $npernode = $options->{npernode};
     my @my_npernode;
 
-    # Convert nodelist into a list of unique nodes
-    my %unique_nodes;
-    $unique_nodes{$_} = 1 foreach @$nodelist;
-    my @unique_nodes = keys(%unique_nodes);
-
-    if ( scalar(@unique_nodes) != $options->{num_nodes} )  # assert 
-    {
-        bailout( -5, 
-            sprintf("Assertion failed in gen_hybrid_nodefile:\n"
-            ."length(nodelist) != options{num_nodes}\n"
-            ."%d != %d\n", scalar(@unique_nodes), $options->{num_nodes}) );
+    #### Convert nodelist into a list of unique nodes with order preserved
+    my @unique_nodes;
+    foreach my $node ( @$nodelist ) {
+        push( @unique_nodes, $node ) unless grep {$_ eq $node} @unique_nodes;
     }
+
+    ### Make sure the nodelist contains the same number of nodes as the 
+    ### resource manager says it should contain
+    if ( scalar(@unique_nodes) != $options->{rm_num_nodes} ) {
+        bailout( -5, sprintf( "ERROR: assert failed: #nodes (%d) in nodefile "
+            ."(%s) inconsistent with nodecount (%d) from %s\n",
+            scalar(@unique_nodes),
+            $options->{rm_nodefile},
+            $options->{rm_num_nodes} ) );
+    }
+
+    ### Make sure the user isn't requesting more nodes that he or she was given
+    if ( scalar(@unique_nodes) < $options->{num_nodes} )
+    {
+        close($fh);
+        unlink($filename);
+        bailout( 4, 
+            sprintf("ERROR: Your MPI job requested %d nodes but %s only provided %d.\n",
+            $options->{num_nodes}, $options->{sys_rm}, scalar(@unique_nodes) ) );
+    }
+
+    # -N supercedes the number of nodes given by the batch system
+    my $nodes_to_use = $options->{num_nodes};
 
     # Positive npernode means npernode divides evenly into num_nodes.  Just 
     # print $npernode copies per node into the new nodefile.
@@ -196,8 +212,8 @@ sub gen_hybrid_nodefile
     }
 
     ### Convert our nodelist and my_npernode into nodefiles
-    printf "got %d unique nodes\n", scalar(@unique_nodes);
-    foreach my $i ( 0 .. $#unique_nodes )
+    dprintf("Got %d unique nodes\n", $nodes_to_use);
+    foreach my $i ( 0 .. ($nodes_to_use-1) )
     {
         printf "got %d ranks on node %d\n", $my_npernode[$i], $i;
         foreach ( 1 .. $my_npernode[$i] )
@@ -219,42 +235,115 @@ sub get_options
     my $old_options = shift;
     my %new_options;
     use Getopt::Long;
-    Getopt::Long::Configure( "require_order" );
+    Getopt::Long::Configure( "require_order", "no_ignore_case", 
+                            "auto_version", "auto_help", "no_auto_abbrev" );
     if ( @$argv > 0 ) 
     {
         GetOptions(
             "o=i"           =>  \$new_options{nodefile_offset},
+            "no=i"          =>  \$new_options{node_offset},
             "N=i"           =>  \$new_options{num_nodes},
             "n|np=i"        =>  \$new_options{num_ranks}, 
             "npernode=i"    =>  \$new_options{npernode},
         );
     }
 
+    ### Check the consistency of user-provided options before doing anything
+    #
+    # Hybrid jobs (those which do not run one MPI rank per core) can be 
+    # specified in several ways:
+    #
+    #   1. Specifying -N and -n (a la Slurm)
+    #   2. Specifying -N and -npernode (a la OpenMPI)
+    #   3. Just -n (let the RM pick up the -N)
+    #   4. Just -npernode (let the RM pick up the -N)
+    #
+    #   Thus, if neither -npernode nor -n are provided, this is not a hybrid 
+    # job.  In all cases, rm_num_ranks should probably be ignored.  As long as
+    # we can gaurantee that num_nodes and npernode are defined by the end of
+    # get_options(), we can calculate num_ranks.
+    #
+    #   In the event that npernode is negative (i.e., not all nodes have the
+    # same loading due to num_ranks%npernode != 0), num_ranks is already 
+    # defined by the user so it would be safe to carry that value forward
+    # without recalculating.
+    #
+    if ( $new_options{num_ranks}
+    &&   $new_options{num_nodes}
+    &&   $new_options{npernode}
+    &&   ($new_options{num_nodes}*$new_options{npernode}) != $new_options{num_ranks} ) {
+        bailout( 1, "ERROR: Either provide -N and -n OR -N and --npernode\n" );
+    }
+    if ( $new_options{npernode}
+    &&   $new_options{num_ranks} )
+    {
+        bailout( 1, "ERROR: Either provide -n OR --npernode, but not both\n" );
+    }
+
+    # Check offset arguments to maintain compatibility with TACC's ibrun 
+    # implementation.  Also added a per-node offset
+    if ( $new_options{nodefile_offset}
+    && ( ($new_options{num_ranks} && $new_options{nodefile_offset} >= $new_options{num_ranks})
+    ||   $new_options{nodefile_offset} < 0) ) {
+        bailout( 1, "ERROR: Your nodefile offset (-o) must be between 0 and (n-1).\n" );
+    }
+    if ( $new_options{node_offset}
+    && ( ( $new_options{num_nodes}
+    &&   $new_options{node_offset} >= $new_options{num_nodes})
+    ||   $new_options{node_offset} < 0 ) ) {
+        bailout( 1, "ERROR: Your node offset (-no) must be between 0 and (N-1).\n" );
+    }
+
+    # Make sure user did not entire anything that is numerically nonsensical
+    if ( $new_options{num_nodes} && $new_options{num_nodes} <= 0 ) {
+        bailout( 1, "ERROR: Your number of nodes (-N) must be greater than zero.\n" );
+    }
+    if ( $new_options{num_ranks} && $new_options{num_ranks} <= 0 ) {
+        bailout( 1, "ERROR: Your number of ranks (-n) must be greater than zero.\n" );
+    }
+    if ( $new_options{npernode} && $new_options{npernode} <= 0 ) {
+        bailout( 1, "ERROR: Your ranks per node (--npernode) must be greater than zero.\n" );
+    }
+
+
     # Merge in the user-provided values with the pre-set values.  Overwrite old
     # pre-set values with user-provided when duplicates occur.
     my %options = ( %$old_options, %new_options );
 
+
     ### If user did not specify certain parameters, copy the values from what
     ### the resource manager (rm) provided
+    # this job should skip the first X entries in the nodefile
     if ( !$options{nodefile_offset} ) { 
+        dprintf( "Using default nodefile_offset...\n" );
         $options{nodefile_offset} = 0; 
+    }
+
+    # this job should skip the first X unique nodes in the nodefile
+    if ( !$options{node_offset} ) {
+        dprintf( "Using default node_offset...\n" );
+        $options{node_offset} = 0;
     }
 
     # how many nodes the job will use
     if ( !$options{num_nodes} ) {
+        dprintf( "Using default num_nodes...\n" );
         $options{num_nodes} = $options{rm_num_nodes}
     }
 
     # how many MPI ranks total the job will use
     if ( !$options{num_ranks} ) {
-        $options{num_ranks} = $options{num_nodes} * $options{sys_ppn};
+        dprintf( "Using default num_ranks...\n" );
+        $options{num_ranks} = $options{rm_num_ranks};
     }
 
     # how many MPI ranks per node the job will use.  If this is NEGATIVE, then 
-    # the division is uneven and the node breakdown requires a lot more logic
+    # the division is uneven and the node breakdown requires a lot more logic,
+    # so flag the npernode parameter and let gen_hostfile() do that
     my $remainder = $options{num_ranks} % $options{num_nodes};
     if ( !$options{npernode} )
     {
+        dprintf( "Calculating proper npernode since -npernode wasn't defined...\n" );
         if ( $remainder == 0 ) {
             $options{npernode} = $options{num_ranks} / $options{num_nodes};
         }
@@ -264,9 +353,15 @@ sub get_options
         }
     }
     elsif ( $remainder != 0 ) {
+        dprintf( "Calculating proper npernode due to uneven division of numranks/numnodes...\n" );
         $options{npernode} = -1 * floor($options{num_ranks} 
                                 / $options{num_nodes});
     }
+    # recalculate num_ranks in case user specified -N which is less than 
+    # rm_num_nodes.  if npernode is negative though, leave it alone since
+    # an imbalance of ranks per node can only occur if the user specified
+    # num_ranks explicitly already
+    $options{num_ranks} = $options{num_nodes} * $options{npernode} if $options{npernode} > 0;
 
     ### Check the sanity of the inputted parameters
     if ( $options{npernode} > $options{sys_ppn} ) 
@@ -282,7 +377,7 @@ sub get_options
     if ( $options{num_nodes} > $options{sys_max_nodes} )
     {
         bailout(3, sprintf("ERROR: Your job requests more nodes (%d) than the "
-            ."maximum allowed per job (%d)",
+            ."maximum allowed per job (%d)\n",
             $options{num_nodes},
             $options{sys_max_nodes} ) );
     }
