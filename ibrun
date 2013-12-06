@@ -48,19 +48,23 @@ $options->{env_hacks}->{mpich} = {
 {
     my $hostname = hostname();
     if ( $hostname =~ m/^(gcn-|gordon-)/ ) { 
-        $options->{sys_ppn}         = 16;
-        $options->{sys_max_nodes}   = 128;
+        $options->{sys_pps}         = 8;    # sockets per node
+        $options->{sys_ppn}         = 16;   # cores per node
+        $options->{sys_max_nodes}   = 128;  # max nodes per job
     }
     elsif ( $hostname =~ m/^trestles-/ ) {
+        $options->{sys_pps}         = 8;
         $options->{sys_ppn}         = 32;
         $options->{sys_max_nodes}   = 32;
     }
     elsif ( $hostname =~ m/^tscc-/ ) {
+        $options->{sys_pps}         = 8;
         $options->{sys_ppn}         = 16;
         $options->{sys_max_nodes}   = 9999999;
     }
     else {
         # bailout( -1, "ERROR: ibrun is running on an unknown system.  " . CONTACT );
+        $options->{sys_pps}         = 8;
         $options->{sys_ppn}         = 32;
         $options->{sys_max_nodes}   = 32;
     }
@@ -83,14 +87,14 @@ my $cmd_string = gen_mpirun_cmd( $options );
 
 #unlink($options->{nodefile});           # delete the nodefile
 printf( "Nodefile is %s\n", $options->{nodefile} );
-printf( "Command string is [%s] with args [%s]\n", $cmd_string, join(' ', @{$options->{cmd_args}}) );
+printf( "Command string is [%s] with args [%s]\n", 
+    $cmd_string, 
+    join(' ', @{$options->{cmd_args}}) );
 #system( $cmd_string, @{$options->{cmd_args}} );
 
 ################################################################################
-### Subroutines
+### load_nodefile: Load nodelist from nodefile into an array and return it
 ################################################################################
-
-### Load nodelist from nodefile into an array and return it
 sub load_nodefile
 {
     my $nodefile = shift;
@@ -106,10 +110,12 @@ sub load_nodefile
     return @nodelist;
 }
 
-### Rebuild a nodefile based on user input, return its location.  This 
-### subroutine assumes that num_nodes, npernode are either well-defined, or
-### npernode is negative, num_nodes is well-defined and npernode needs to be
-### recalculated here
+################################################################################
+### gen_nodefile: Rebuild a nodefile based on user input, return its location.
+###     This subroutine assumes that num_nodes, npernode are either well-
+###     defined, or npernode is negative, num_nodes is well-defined and npernode
+###     needs to be recalculated here
+################################################################################
 sub gen_nodefile
 {
     use File::Temp;
@@ -212,11 +218,13 @@ sub gen_nodefile
     }
 
     ### Convert our nodelist and my_npernode into nodefiles
-    dprintf("Got %d unique nodes\n", $nodes_to_use);
+    dprintf("Running on %d unique nodes\n", $nodes_to_use);
     foreach my $i ( 0 .. ($nodes_to_use-1) )
     {
-        dprintf( "Got %d ranks on node %d with %d threads each\n", 
-            $my_npernode[$i], $i, $options->{tpr} );
+        dprintf( "Will place %d ranks on %s with %d threads each\n", 
+            $my_npernode[$i], 
+            $unique_nodes[$i], 
+            $options->{tpr} );
         foreach ( 1 .. $my_npernode[$i] )
         {
             print $fh $unique_nodes[$i] . "\n";
@@ -224,11 +232,41 @@ sub gen_nodefile
     }
     close($fh);
 
+    ### Now set most sensible binding policy and level based on job geometry
+    if ( $options->{tpr} == 1 ) {
+        $options->{def_binding_policy}  = 'scatter';    # best memory bandwidth
+        $options->{def_binding_level}   = 'core';
+    }
+    elsif ( $options->{tpr} == $options->{sys_pps} ) {
+        $options->{def_binding_policy}  = 'scatter';
+        $options->{def_binding_level}   = 'socket';
+    }
+    else {
+        $options->{def_binding_policy}  = 'none';
+        $options->{def_binding_level}   = 'off';
+    }
+
+    ### Set these recommended settings if user hasn't overridden them
+    if ( !$options->{binding_policy} ) {
+        $options->{binding_policy} = $options->{def_binding_policy};
+    }
+    if ( !$options->{binding_level} ) {
+        $options->{binding_level} = $options->{def_binding_level};
+    }
+
+    dprintf( "MPI binding policy: %s/%s for %d threads per node (%d cores per socket)\n", 
+        $options->{binding_policy},
+        $options->{binding_level},
+        $options->{tpr},
+        $options->{sys_pps} );
+
     $options->{nodefile} = $filename;
     return;
 }
 
-### Generate the actual "mpirun -n X ..." line to be executed
+################################################################################
+### gen_mpirun_cmd: Generate the actual "mpirun -n X ..." line to be executed
+################################################################################
 sub gen_mpirun_cmd
 {
     my $launch_cmd = "echo 'ERROR: No MPI launcher found' >&2; echo ";
@@ -238,22 +276,51 @@ sub gen_mpirun_cmd
     # Load the env variables we want to hack in for our specific MPI stack
     my $env_hacks;
     if ( $options->{env_hacks}->{$mpi_stack} ) { 
-        $env_hacks = gen_env($options->{env_hacks}->{$mpi_stack});
+        $env_hacks = $options->{env_hacks}->{$mpi_stack};
     }
 
     ### MVAPICH2 ###############################################################
     if ( $options->{mpi_stack} eq "mvapich2" )
     {
+        # Generate binding policy settings
+        if ( $options->{binding_policy} eq 'none'
+        ||   $options->{binding_level} eq 'none' ) {
+            $env_hacks->{MV2_ENABLE_AFFINITY} = 0;
+        }
+        else {
+            if ( $options->{binding_policy} eq 'scatter' ) {
+                $env_hacks->{MV2_CPU_BINDING_POLICY} = 'scatter';
+            }
+            elsif ( $options->{binding_policy} eq 'compact' ) {
+                $env_hacks->{MV2_CPU_BINDING_POLICY} = 'bunch';
+            }
+            else {
+                $env_hacks->{MV2_ENABLE_AFFINITY} = 0;
+            }
+    
+            if ( $options->{binding_level} eq 'socket' ) {
+                $env_hacks->{MV2_CPU_BINDING_LEVEL} = 'socket';
+            }
+            elsif ( $options->{binding_level} eq 'core' ) {
+                $env_hacks->{MV2_CPU_BINDING_LEVEL} = 'core';
+            }
+            else {
+                $env_hacks->{MV2_ENABLE_AFFINITY} = 0;
+            }
+        }
+
+        # Build mpirun command and environment variable injection
         if ( $options->{mpi_launcher} eq 'mpirun_rsh' )
         {
+
             $launch_cmd = "mpirun_rsh";
             $options->{mpirun_switches} .= sprintf( "-np %d -hostfile %s ",
                 $options->{num_ranks}, $options->{nodefile} );
-            $options->{mpirun_switches} .= $env_hacks;
+            $options->{mpirun_switches} .= gen_env($env_hacks);
         }
         elsif ( $options->{mpi_launcher} eq 'mpiexec.hydra' )
         {
-            $launch_cmd = $env_hacks;
+            $launch_cmd = gen_env($env_hacks);
             $launch_cmd .= "mpiexec.hydra";
             $options->{mpirun_switches} .= sprintf( "-np %d -hostfile %s ",
                 $options->{num_ranks}, $options->{nodefile} );
@@ -267,7 +334,35 @@ sub gen_mpirun_cmd
     ### OPENMPI ################################################################
     elsif ( $options->{mpi_stack} eq "openmpi" )
     {
-        $launch_cmd = $env_hacks;
+        # Generate binding policy settings
+        if ( $options->{binding_policy} eq 'none'
+        ||   $options->{binding_level} eq 'none' ) {
+            $options->{mpirun_switches} .= '--bind-to-none ' ;
+        }
+        else {
+            if ( $options->{binding_policy} eq 'scatter' ) {
+                $options->{mpirun_switches} .= '--bysocket ' ;
+            }
+            elsif ( $options->{binding_policy} eq 'compact' ) {
+                $options->{mpirun_switches} .= '--bycore ';
+            }
+            else {
+                $options->{mpirun_switches} .= '--bind-to-none ';
+            }
+    
+            if ( $options->{binding_level} eq 'socket' ) {
+                $options->{mpirun_switches} .= '--bind-to-socket ';
+            }
+            elsif ( $options->{binding_level} eq 'core' ) {
+                $options->{mpirun_switches} .= '--bind-to-core ';
+            }
+            else {
+                $options->{mpirun_switches} .= '--bind-to-none ';
+            }
+        }
+
+        # Build mpirun command and environment variable injection
+        $launch_cmd = gen_env($env_hacks);
         $launch_cmd .= "orterun";
         $options->{mpirun_switches} .= sprintf( "-n %d -machinefile %s ",
             $options->{num_ranks}, $options->{nodefile} );
@@ -289,8 +384,11 @@ sub gen_mpirun_cmd
         $options->{mpirun_switches},
         $options->{cmd} );
 }
-### Subroutine to turn a hash into an environment variable assignment string.
-### Doesn't overwrite values from the hash is the user already set them
+
+################################################################################
+### gen_env: Subroutine to turn a hash into an environment variable assignment 
+### string.  Doesn't overwrite values from the hash is the user already set them
+################################################################################
 sub gen_env
 {
     my $hash = shift;
@@ -306,9 +404,11 @@ sub gen_env
     return $output;
 }
 
-### Parse command line input and check for errors.  This will be called
-### AFTER the resource manager's paramaters have already been loaded into
+################################################################################
+### get_options: Parse command line input and check for errors.  This will be 
+### called AFTER the resource manager's paramaters have already been loaded into
 ### the options hash.
+################################################################################
 sub get_options
 {
     my $argv = shift;
@@ -326,6 +426,8 @@ sub get_options
             "n|np=i"        =>  \$new_options{num_ranks}, 
             "npernode=i"    =>  \$new_options{npernode},
             "switches=s"    =>  \$new_options{mpirun_switches},
+            "binding-policy=s"  =>  \$new_options{binding_policy},
+            "binding-level=s"   =>  \$new_options{binding_level},
         );
     }
 
@@ -386,6 +488,37 @@ sub get_options
         bailout( 1, "ERROR: Your ranks per node (--npernode) must be greater than zero.\n" );
     }
 
+    # Check for a valid binding policy/level
+    if ( $new_options{binding_policy} ) {
+        my %valid = (
+            'scatter'   => 'scatter',
+            'compact'   => 'compact',
+            'bunch'     => 'compact',
+            'none'      => 'none',
+            'off'       => 'none', );
+        if ( !$valid{$new_options{binding_policy}} ) {
+            bail(1, "ERROR: Invalid binding policy.  Valid policies are "
+            . join( ' ', reverse(keys(%valid)) ) );
+        }
+        else {
+            $new_options{binding_policy} = $valid{$new_options{binding_policy}};
+        }
+    }
+    if ( $new_options{binding_level} ) {
+        my %valid = (
+            'core'      => 'core',
+            'socket'    => 'socket',
+            'none'      => 'none',
+            'off'       => 'none');
+        if ( !$valid{$new_options{binding_level}} ) {
+            bail(1, "ERROR: Invalid binding level.  Valid level are "
+            . join( ' ', reverse(keys(%valid)) ) );
+        }
+        else {
+            $new_options{binding_level} = $valid{$new_options{binding_level}};
+        }
+    }
+
 
     # Merge in the user-provided values with the pre-set values.  Overwrite old
     # pre-set values with user-provided when duplicates occur.
@@ -396,26 +529,26 @@ sub get_options
     ### the resource manager (rm) provided
     # this job should skip the first X entries in the nodefile
     if ( !$options{nodefile_offset} ) { 
-        dprintf( "Using default nodefile_offset...\n" );
+        dprintf( "Using default nodefile_offset for now...\n" );
         $options{nodefile_offset} = 0; 
     }
 
     # this job should skip the first X unique nodes in the nodefile
     if ( !$options{node_offset} ) {
-        dprintf( "Using default node_offset...\n" );
+        dprintf( "Using default node_offset for now...\n" );
         $options{node_offset} = 0;
     }
 
     # how many nodes the job will use
     if ( !$options{num_nodes} ) {
-        dprintf( "Using default num_nodes...\n" );
+        dprintf( "Using default num_nodes for now...\n" );
         $options{num_nodes} = $options{rm_num_nodes}
     }
 
     # how many MPI ranks total the job will use
     if ( !$options{num_ranks} ) {
         if ( $options{num_nodes} == $options{rm_num_nodes} ) {
-            dprintf( "Using default num_ranks...\n" );
+            dprintf( "Using default num_ranks for now...\n" );
             $options{num_ranks} = $options{rm_num_ranks};
         }
         # if user provides -N but nothing else, assume she wants all all cores
@@ -450,7 +583,15 @@ sub get_options
     # rm_num_nodes.  if npernode is negative though, leave it alone since
     # an imbalance of ranks per node can only occur if the user specified
     # num_ranks explicitly already
-    $options{num_ranks} = $options{num_nodes} * $options{npernode} if $options{npernode} > 0;
+    if ( $options{npernode} > 0 ) {
+        my $recalculated_ranks = $options{num_nodes} * $options{npernode};
+        if ( $options{num_ranks} != $recalculated_ranks ) {
+            dprintf( "Will use %d ranks instead of the previous %d\n",
+                $recalculated_ranks,
+                $options{num_ranks} );
+        }
+        $options{num_ranks} = $recalculated_ranks;
+    }
 
     ### Check the sanity of the inputted parameters
     if ( $options{npernode} > $options{sys_ppn} ) 
@@ -477,6 +618,10 @@ sub get_options
     return \%options;
 }
 
+################################################################################
+### bailout: terminate with an error and optionally delete the temporary 
+### nodefile created by ibrun
+################################################################################
 sub bailout
 {
     my $errno = shift;
@@ -496,6 +641,9 @@ sub bailout
     exit $errno;
 }
 
+################################################################################
+### dprintf: print messages if debugging is enabled
+################################################################################
 sub dprintf
 {
     return unless ENABLE_DEBUGGING;
