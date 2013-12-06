@@ -11,6 +11,9 @@ use warnings;
 use Sys::Hostname;
 use Getopt::Long;
 use POSIX;
+use Pod::Usage;
+
+pod2usage( -verbose => 1 );
 
 use constant CONTACT => 'Contact help@xsede.org for additional assistance.';
 use constant ENABLE_DEBUGGING => 1;
@@ -652,32 +655,64 @@ sub dprintf
 
 __END__
 
-=pod
-
 =head1 NAME
 
 ibrun - launch MPI jobs from an implementation-independent command
 
+=head1 SYNOPSIS
+
+ibrun [options] <executable> [executable args]
+
+ Options:
+    -n, -np <n>
+        launch n MPI ranks (default: use all cores provided by resource manager)
+
+    -o, --offset <n>
+        assign MPI ranks starting at the nth slot provided by the resource 
+        manager (default: 0)
+    
+    -no <n>
+        assign MPI ranks starting at the nth unique node provided by the 
+        resource manager (default: 0)
+    
+    --npernode <n>
+        only launch n MPI ranks per node (default: ppn from resource manager)
+    
+    --switches '<implementation-specific switches>'
+        Pass additional command-line switches to the underlying implementation's
+        MPI launcher.  These WILL be overridden by any switches ibrun 
+        subsequently enables (default: none)
+    
+    --binding-policy <scatter|compact|none>
+        Define the CPU affinity's binding policy for each MPI rank.  'scatter' 
+        distributes ranks across each binding level, 'compact' fills up a 
+        binding level before allocating another, and 'none' disables all 
+        affinity settings (default: optimized for job geometry)
+    
+    --binding-level <core|socket|none>
+        Define the level of granularity for CPU affinity for each MPI rank.  
+        'core' binds each rank to a single core; 'socket' binds each rank to 
+        all cores on a single CPU socket (good for multithreaded ranks), and 
+        'none' disables all affinity settings. (default: optimized for job 
+        geometry)
+    
+    -? 
+        Print this message
+
 =head1 DESCRIPTION
 
-This application launches an MPI job using a simple user interface that automatically configures the implementation- and system-specific features on whichever MPI stack the user wants to use.
-
--n, -np <n>
-    launch n MPI ranks (default: use all cores provided by resource manager)
-
--o, --offset <n>
-    assign MPI ranks starting at the nth slot provided by the resource manager
-    (default: 0)
-
---npernode <n>
-    only launch n MPI ranks per node
-
--h 
-    print this message
+This application launches an MPI job using a simple user interface that 
+automatically configures the implementation- and system-specific features on 
+whichever MPI stack the user wants to use.  Provides an administrator-
+configurable optimal set of settings as well as a best-guess binding 
+policy based on job geometry.
 
 =head1 KNOWN BUGS
 
-No known issues.
+Currently the following features are not supported:
+* MPICH2 stack
+* VSMP nodes (SDSC Gordon) 
+* -o and -no options
 
 =head1 AUTHOR
 
