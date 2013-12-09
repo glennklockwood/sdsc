@@ -12,24 +12,13 @@ use Sys::Hostname;
 use Getopt::Long;
 use POSIX;
 use Pod::Usage;
-
-pod2usage( -verbose => 1 );
-
 use constant CONTACT => 'Contact help@xsede.org for additional assistance.';
-use constant ENABLE_DEBUGGING => 1;
 
 our $options; 
 
-### Pull in default options from the resource manager
-$options->{sys_rm}      = 'Torque';
-$options->{rm_nodefile} = $ENV{PBS_NODEFILE};
-$options->{rm_num_nodes}= $ENV{PBS_NUM_NODES};
-$options->{rm_ppn}      = $ENV{PBS_NUM_PPN};
-$options->{rm_jobid}    = $ENV{PBS_JOBID};
-$options->{rm_num_ranks}   = $options->{rm_num_nodes} * $options->{rm_ppn};
+### Define some parameters to impose on all MPI jobs unless user overrides
 $options->{mpi_srq_size}        = 2048;
 $options->{mpi_default_timeout} = 23;
-
 $options->{env_hacks}->{mvapich2} = {
     MV2_USE_UD_HYBRID => 0,
     MV2_USE_OLD_BCAST => 1,
@@ -51,27 +40,52 @@ $options->{env_hacks}->{mpich} = {
 {
     my $hostname = hostname();
     if ( $hostname =~ m/^(gcn-|gordon-)/ ) { 
-        $options->{sys_pps}         = 8;    # sockets per node
-        $options->{sys_ppn}         = 16;   # cores per node
-        $options->{sys_max_nodes}   = 128;  # max nodes per job
+        $options->{sys_pps}         = 8;        # sockets per node
+        $options->{sys_ppn}         = 16;       # cores per node
+        $options->{sys_max_nodes}   = 128;      # max nodes per job
+        $options->{sys_rm}          = 'Torque'; # resource manager
     }
     elsif ( $hostname =~ m/^trestles-/ ) {
         $options->{sys_pps}         = 8;
         $options->{sys_ppn}         = 32;
         $options->{sys_max_nodes}   = 32;
+        $options->{sys_rm}          = 'Torque';
     }
     elsif ( $hostname =~ m/^tscc-/ ) {
         $options->{sys_pps}         = 8;
         $options->{sys_ppn}         = 16;
         $options->{sys_max_nodes}   = 9999999;
+        $options->{sys_rm}          = 'Torque';
     }
     else {
-        # bailout( -1, "ERROR: ibrun is running on an unknown system.  " . CONTACT );
+        # bailout( -1, "ibrun is running on an unknown system." );
         $options->{sys_pps}         = 8;
         $options->{sys_ppn}         = 32;
         $options->{sys_max_nodes}   = 32;
+        $options->{sys_rm}          = 'Torque';
     }
 }
+
+### Pull in default options from the resource manager
+if ( $options->{sys_rm} eq 'Torque' ) {
+    $options->{rm_nodefile} = $ENV{PBS_NODEFILE};
+    $options->{rm_num_nodes}= $ENV{PBS_NUM_NODES};
+    $options->{rm_ppn}      = $ENV{PBS_NUM_PPN};
+    $options->{rm_jobid}    = $ENV{PBS_JOBID};
+}
+elsif ( $options->{sys_rm} eq 'Slurm' ) {
+    bailout(-1, "This feature is not yet available.\n", $options )
+}
+elsif ( $options->{sys_rm} eq 'SGE' ) {
+    bailout(-1, "This feature is not yet available.\n", $options )
+}
+elsif ( $options->{sys_rm} eq 'LSF' ) {
+    bailout(-1, "This feature is not yet available.\n", $options )
+}
+else {
+    bailout(-1, "Unknown resource manager.");
+}
+$options->{rm_num_ranks}= $options->{rm_num_nodes} * $options->{rm_ppn} if $options->{rm_num_nodes};
 
 ### Let command-line options override the defaults defined above
 $options = get_options( \@ARGV );
@@ -88,12 +102,37 @@ gen_nodefile( );
 ### Construct the appropriate MPI launcher command line
 my $cmd_string = gen_mpirun_cmd( $options );
 
-#unlink($options->{nodefile});           # delete the nodefile
-printf( "Nodefile is %s\n", $options->{nodefile} );
-printf( "Command string is [%s] with args [%s]\n", 
+dprintf( "Nodefile is %s\n", $options->{nodefile} );
+dprintf( "Command string is [%s] with args [%s]\n", 
     $cmd_string, 
     join(' ', @{$options->{cmd_args}}) );
-#system( $cmd_string, @{$options->{cmd_args}} );
+
+### Don't pull the trigger if we're doing a dry run
+if ( ! $options->{dryrun} ) {
+    system( $cmd_string, @{$options->{cmd_args}} );
+
+    if ( $? == -1 ) {
+        dprintf( "Failed to execute: $!\n" );
+    }
+    elsif ( $? & 127 ) {
+        dprintf( "Job died with signal %d, %s core dump\n",
+            ( $? & 127 ), (( $? & 128 ) ? 'with' : 'without') );
+    }
+    else {
+        dprintf( "Job ended with value %d\n", $? >> 8 );
+    }
+}
+
+### Delete the temporary nodefile
+if ( $options
+&&   $options->{rm_nodefile}
+&&   $options->{nodefile}
+&&   $options->{nodefile} ne $options->{rm_nodefile}
+&&   -e $options->{nodefile} )
+{
+    unlink $options->{nodefile};
+}
+
 
 ################################################################################
 ### load_nodefile: Load nodelist from nodefile into an array and return it
@@ -101,7 +140,10 @@ printf( "Command string is [%s] with args [%s]\n",
 sub load_nodefile
 {
     my $nodefile = shift;
-    open (NODEFILE, $nodefile) or bailout( 1, "Unable to open nodefile $nodefile\n");
+    if ( ! $nodefile ) {
+        bailout( 1, "Unable to determine nodefile from resource manager.\n");
+    }
+    open( NODEFILE, $nodefile) or bailout( 1, "Unable to open nodefile $nodefile.\n");
 
     my @nodelist;
     
@@ -124,7 +166,13 @@ sub gen_nodefile
     use File::Temp;
 
     ### Load nodelist into an array
-    my @nodelist = load_nodefile( $options->{rm_nodefile} );
+    my @nodelist;
+    if ( $options->{nodefile} ) { # user-defined nodefile trumps RM nodefile
+        @nodelist = load_nodefile( $options->{nodefile} );
+    }
+    else {
+        @nodelist = load_nodefile( $options->{rm_nodefile} );
+    }
     $options->{nodelist} = \@nodelist;
 
     ### If the user is running a normal job (each MPI rank corresponds to a
@@ -157,8 +205,8 @@ sub gen_nodefile
     ### resource manager says it should contain
     if ( scalar(@unique_nodes) != $options->{rm_num_nodes} ) {
         close($fh);
-        bailout( -5, sprintf( "ERROR: assert failed: #nodes (%d) in nodefile "
-            ."(%s) inconsistent with nodecount (%d) from %s\n",
+        bailout( -5, sprintf( "Assert failed: #nodes (%d) in nodefile "
+            ."(%s) inconsistent with nodecount (%d) from %s.\n",
             scalar(@unique_nodes),
             $options->{rm_nodefile},
             $options->{rm_num_nodes} ),
@@ -170,7 +218,7 @@ sub gen_nodefile
     {
         close($fh);
         bailout( 4, 
-            sprintf("ERROR: Your MPI job requested %d nodes but %s only provided %d.\n",
+            sprintf("Your MPI job requested %d nodes but %s only provided %d.\n",
             $options->{num_nodes}, $options->{sys_rm}, scalar(@unique_nodes) ),
             $options);
     }
@@ -330,7 +378,7 @@ sub gen_mpirun_cmd
         }
         else
         {
-            bailout( 2, "Unknown/undefined MPI launcher\n", $options );
+            bailout( 2, "Unknown/undefined MPI launcher.\n", $options );
         }
     }
 
@@ -374,12 +422,12 @@ sub gen_mpirun_cmd
     ### MPICH2 #################################################################
     elsif ( $options->{mpi_stack} eq "mpich2" )
     {
-        bailout( 1, "This feature is not yet available.\n", $options )
+        bailout(-1, "This feature is not yet available.\n", $options )
     }
     else
     {
-        bailout(2, sprintf( "Unknown MPI stack '%s'.  %s\n",
-            ($options->{mpi_stack} ? $options->{mpi_stack} : "????"), CONTACT),
+        bailout(2, sprintf( "Unknown MPI stack '%s'.\n",
+            ($options->{mpi_stack} ? $options->{mpi_stack} : "????")),
             $options );
     }
     return sprintf( "%s %s %s",
@@ -431,6 +479,9 @@ sub get_options
             "switches=s"    =>  \$new_options{mpirun_switches},
             "binding-policy=s"  =>  \$new_options{binding_policy},
             "binding-level=s"   =>  \$new_options{binding_level},
+            "nodefile|machinefile=s"    => \$new_options{nodefile},
+            "dryrun"        => \$new_options{dryrun},
+            "v|verbose"     => \$new_options{verbose},
         );
     }
 
@@ -458,12 +509,12 @@ sub get_options
     &&   $new_options{num_nodes}
     &&   $new_options{npernode}
     &&   ($new_options{num_nodes}*$new_options{npernode}) != $new_options{num_ranks} ) {
-        bailout( 1, "ERROR: Either provide -N and -n OR -N and --npernode\n" );
+        bailout( 1, "Either provide -N and -n OR -N and --npernode.\n" );
     }
     if ( $new_options{npernode}
     &&   $new_options{num_ranks} )
     {
-        bailout( 1, "ERROR: Either provide -n OR --npernode, but not both\n" );
+        bailout( 1, "Either provide -n OR --npernode, but not both.\n" );
     }
 
     # Check offset arguments to maintain compatibility with TACC's ibrun 
@@ -471,24 +522,24 @@ sub get_options
     if ( $new_options{nodefile_offset}
     && ( ($new_options{num_ranks} && $new_options{nodefile_offset} >= $new_options{num_ranks})
     ||   $new_options{nodefile_offset} < 0) ) {
-        bailout( 1, "ERROR: Your nodefile offset (-o) must be between 0 and (n-1).\n" );
+        bailout( 1, "Your nodefile offset (-o) must be between 0 and (n-1).\n" );
     }
     if ( $new_options{node_offset}
     && ( ( $new_options{num_nodes}
     &&   $new_options{node_offset} >= $new_options{num_nodes})
     ||   $new_options{node_offset} < 0 ) ) {
-        bailout( 1, "ERROR: Your node offset (-no) must be between 0 and (N-1).\n" );
+        bailout( 1, "Your node offset (-no) must be between 0 and (N-1).\n" );
     }
 
     # Make sure user did not entire anything that is numerically nonsensical
     if ( $new_options{num_nodes} && $new_options{num_nodes} <= 0 ) {
-        bailout( 1, "ERROR: Your number of nodes (-N) must be greater than zero.\n" );
+        bailout( 1, "Your number of nodes (-N) must be greater than zero.\n" );
     }
     if ( $new_options{num_ranks} && $new_options{num_ranks} <= 0 ) {
-        bailout( 1, "ERROR: Your number of ranks (-n) must be greater than zero.\n" );
+        bailout( 1, "Your number of ranks (-n) must be greater than zero.\n" );
     }
     if ( $new_options{npernode} && $new_options{npernode} <= 0 ) {
-        bailout( 1, "ERROR: Your ranks per node (--npernode) must be greater than zero.\n" );
+        bailout( 1, "Your ranks per node (--npernode) must be greater than zero.\n" );
     }
 
     # Check for a valid binding policy/level
@@ -500,8 +551,8 @@ sub get_options
             'none'      => 'none',
             'off'       => 'none', );
         if ( !$valid{$new_options{binding_policy}} ) {
-            bail(1, "ERROR: Invalid binding policy.  Valid policies are "
-            . join( ' ', reverse(keys(%valid)) ) );
+            bailout(1, "Invalid binding policy.  Valid policies are "
+            . join( ' ', reverse(keys(%valid)) ) . ".\n" );
         }
         else {
             $new_options{binding_policy} = $valid{$new_options{binding_policy}};
@@ -514,8 +565,8 @@ sub get_options
             'none'      => 'none',
             'off'       => 'none');
         if ( !$valid{$new_options{binding_level}} ) {
-            bail(1, "ERROR: Invalid binding level.  Valid level are "
-            . join( ' ', reverse(keys(%valid)) ) );
+            bailout(1, "Invalid binding level.  Valid level are "
+            . join( ' ', reverse(keys(%valid)) ) . ".\n" );
         }
         else {
             $new_options{binding_level} = $valid{$new_options{binding_level}};
@@ -544,8 +595,14 @@ sub get_options
 
     # how many nodes the job will use
     if ( !$options{num_nodes} ) {
-        dprintf( "Using default num_nodes for now...\n" );
-        $options{num_nodes} = $options{rm_num_nodes}
+        if ( !$options{rm_num_nodes} ) {
+            bailout(1, "Unable to obtain number of nodes from resource "
+            . "manager and -N not given.\n" );
+        }
+        else {
+            dprintf( "Using default num_nodes for now...\n" );
+            $options{num_nodes} = $options{rm_num_nodes}
+        }
     }
 
     # how many MPI ranks total the job will use
@@ -609,8 +666,8 @@ sub get_options
 
     if ( $options{num_nodes} > $options{sys_max_nodes} )
     {
-        bailout(3, sprintf("ERROR: Your job requests more nodes (%d) than the "
-            ."maximum allowed per job (%d)\n",
+        bailout(3, sprintf("Your job requests more nodes (%d) than the "
+            ."maximum allowed per job (%d).\n",
             $options{num_nodes},
             $options{sys_max_nodes} ),
             $options);
@@ -629,7 +686,7 @@ sub bailout
 {
     my $errno = shift;
     my $errmsg = shift;
-    print STDERR $errmsg;
+    print STDERR "ERROR: $errmsg\n" . CONTACT . "\n";
 
     ### Delete temporary nodefile on error
     if ( $options
@@ -649,7 +706,7 @@ sub bailout
 ################################################################################
 sub dprintf
 {
-    return unless ENABLE_DEBUGGING;
+    return unless $options->{verbose};
     printf( @_ );
 }
 
@@ -695,6 +752,12 @@ ibrun [options] <executable> [executable args]
         all cores on a single CPU socket (good for multithreaded ranks), and 
         'none' disables all affinity settings. (default: optimized for job 
         geometry)
+
+    --dryrun
+        Do everything except actually launch the application
+
+    -v|--verbose
+        Print diagnostic messages
     
     -? 
         Print this message
