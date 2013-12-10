@@ -93,16 +93,45 @@ $options->{cmd} = shift(@ARGV);
 $options->{cmd_args} = \@ARGV;
 
 ### Determine MPI stack to be used
-$options->{mpi_stack} = "openmpi";
-$options->{mpi_launcher} = "mpirun_rsh";
+{
+    if ( $ENV{LOADEDMODULES} ) {
+        my @modules = split( m/:/, $ENV{LOADEDMODULES} );
+        foreach my $module ( @modules ) {
+            if ( $module =~ m/mvapich2_ib/ 
+            ||   $module =~ m/mv2profile_ib/ ) {
+                $options->{mpi_stack} = "mvapich2";
+                $options->{mpi_launcher} = "mpirun_rsh";
+                last;
+            }
+            elsif ( $module =~ m/openmpi_ib/ ) {
+                $options->{mpi_stack} = "openmpi";
+                $options->{mpi_launcher} = "orterun";
+                last;
+            }
+            elsif ( $module =~ m/mpich2_ib/ ) {
+                $options->{mpi_stack} = "mpich2";
+                $options->{mpi_launcher} = "mpiexec.hydra";
+                last;
+            }
+        }
+        unless ( $options->{mpi_stack} ) {
+            bailout(5, "No recognized MPI modules appear to be loaded.  Load an MPI module before using ibrun.\n" );
+        }
+    }
+    else {
+        bailout(5, "\$LOADEDMODULES is not set.  You must load an MPI module before using ibrun.\n" );
+    }
+}
 
 ### Build the nodefile for this MPI job
 gen_nodefile( );
+dprintf( "Nodefile is %s\n", $options->{nodefile} );
+
+### Set a sensible binding policy
+check_cpu_binding( );
 
 ### Construct the appropriate MPI launcher command line
 my $cmd_string = gen_mpirun_cmd( $options );
-
-dprintf( "Nodefile is %s\n", $options->{nodefile} );
 dprintf( "Command string is [%s] with args [%s]\n", 
     $cmd_string, 
     join(' ', @{$options->{cmd_args}}) );
@@ -257,16 +286,6 @@ sub gen_nodefile
         }
         $options->{tpr} = 1;
     }
-    ### At this point the threads-per-rank should be known.  Check its sanity:
-    if ( $ENV{OMP_NUM_THREADS} && $ENV{OMP_NUM_THREADS} != $options->{tpr} )
-    {
-        printf( STDERR 
-            "WARNING: Your job geometry appears to suggest that you want %d "
-            ."threads per MPI rank, but your OMP_NUM_THREADS is %d.  This will "
-            ."cause thread binding to be disabled.\n",
-            $options->{tpr}, $ENV{OMP_NUM_THREADS} );
-        $options->{tpr} = -1;
-    }
 
     ### Convert our nodelist and my_npernode into nodefiles
     dprintf("Running on %d unique nodes\n", $nodes_to_use);
@@ -282,6 +301,28 @@ sub gen_nodefile
         }
     }
     close($fh);
+
+
+
+    $options->{nodefile} = $filename;
+    return;
+}
+
+################################################################################
+### check_cpu_binding: examine tpr (threads per rank) and job geometry, then
+###   either set a sensible binding policy or warn that there is no sensible
+###   binding policy
+################################################################################
+sub check_cpu_binding {
+    if ( $ENV{OMP_NUM_THREADS} && $ENV{OMP_NUM_THREADS} != $options->{tpr} )
+    {
+        printf( STDERR 
+            "WARNING: Your job geometry appears to suggest that you want %d "
+            ."threads per MPI rank, but your OMP_NUM_THREADS is %d.  This will "
+            ."cause thread binding to be disabled.\n",
+            $options->{tpr}, $ENV{OMP_NUM_THREADS} );
+        $options->{tpr} = -1;
+    }
 
     ### Now set most sensible binding policy and level based on job geometry
     if ( $options->{tpr} == 1 ) {
@@ -305,13 +346,12 @@ sub gen_nodefile
         $options->{binding_level} = $options->{def_binding_level};
     }
 
-    dprintf( "MPI binding policy: %s/%s for %d threads per node (%d cores per socket)\n", 
+    dprintf( "MPI binding policy: %s/%s for %d threads per rank (%d cores per socket)\n", 
         $options->{binding_policy},
         $options->{binding_level},
         $options->{tpr},
         $options->{sys_pps} );
 
-    $options->{nodefile} = $filename;
     return;
 }
 
@@ -365,7 +405,7 @@ sub gen_mpirun_cmd
         {
 
             $launch_cmd = "mpirun_rsh";
-            $options->{mpirun_switches} .= sprintf( "-np %d -hostfile %s ",
+            $options->{mpirun_switches} .= sprintf( "-np %d -hostfile %s -export ",
                 $options->{num_ranks}, $options->{nodefile} );
             $options->{mpirun_switches} .= gen_env($env_hacks);
         }
@@ -386,8 +426,8 @@ sub gen_mpirun_cmd
     elsif ( $options->{mpi_stack} eq "openmpi" )
     {
         # Generate binding policy settings
-        if ( $options->{binding_policy} eq 'none'
-        ||   $options->{binding_level} eq 'none' ) {
+        if (($options->{binding_policy} && $options->{binding_policy} eq 'none')
+        ||  ($options->{binding_level} && $options->{binding_level} eq 'none')) {
             $options->{mpirun_switches} .= '--bind-to-none ' ;
         }
         else {
