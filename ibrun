@@ -91,6 +91,9 @@ $options->{rm_num_ranks}= $options->{rm_num_nodes} * $options->{rm_ppn} if $opti
 $options = get_options( \@ARGV );
 $options->{cmd} = shift(@ARGV);
 $options->{cmd_args} = \@ARGV;
+if ( ! $options->{cmd} ) {
+    pod2usage( -verbose => 1 );
+}
 
 ### Determine MPI stack to be used
 {
@@ -135,7 +138,7 @@ dprintf( "Nodefile is %s\n", $options->{nodefile} );
 check_cpu_binding( );
 
 ### Construct the appropriate MPI launcher command line
-my $cmd_string = gen_mpirun_cmd( $options );
+my $cmd_string = gen_mpirun_cmd( );
 dprintf( "Command string is [%s] with args [%s]\n", 
     $cmd_string, 
     join(' ', @{$options->{cmd_args}}) );
@@ -321,8 +324,8 @@ sub gen_nodefile
 sub check_cpu_binding {
     if ( $ENV{OMP_NUM_THREADS} && $ENV{OMP_NUM_THREADS} != $options->{tpr} )
     {
-        printf( STDERR 
-            "WARNING: Your job geometry appears to suggest that you want %d "
+       ibrun_warn( 
+            "Your job geometry appears to suggest that you want %d "
             ."threads per MPI rank, but your OMP_NUM_THREADS is %d.  This will "
             ."cause thread binding to be disabled.\n",
             $options->{tpr}, $ENV{OMP_NUM_THREADS} );
@@ -363,14 +366,15 @@ sub check_cpu_binding {
     if ( $options->{binding_policy} eq 'illogical' 
     &&   ($options->{tpr} * $options->{npernode}) > $options->{rm_ppn} )
     {
-        my $buf = sprintf( "You requested %d cores per node but will run %d "
+        ibrun_warn( "You requested %d cores per node but will run %d "
         . "(%d MPI ranks * %d threads) per node.  This will cause thread "
         . "binding to be disabled.\n",
             $options->{rm_ppn},
             $options->{tpr}*$options->{npernode},
             $options->{npernode},
             $options->{tpr} );
-        bailout(1, $buf);
+        $options->{binding_policy} = 'none';
+        $options->{binding_level} = 'off';
     }
 
     dprintf( "MPI binding policy: %s/%s for %d threads per rank (%d cores per socket)\n", 
@@ -532,6 +536,7 @@ sub gen_mpirun_cmd
             ($options->{mpi_stack} ? $options->{mpi_stack} : "????")),
             $options );
     }
+
     return sprintf( "%s %s %s",
         $launch_cmd,
         $options->{mpirun_switches},
@@ -597,6 +602,7 @@ sub get_options
     #   2. Specifying -N and -npernode (a la OpenMPI)
     #   3. Just -n (let the RM pick up the -N)
     #   4. Just -npernode (let the RM pick up the -N)
+    #   5. Specifying -n and -tpr (hope that n*tpr < N*ppn)
     #
     #   Thus, if neither -npernode nor -n are provided, this is not a hybrid 
     # job.  In all cases, rm_num_ranks should probably be ignored.  As long as
@@ -644,6 +650,9 @@ sub get_options
     if ( $new_options{npernode} && $new_options{npernode} <= 0 ) {
         bailout( 1, "Your ranks per node (--npernode) must be greater than zero.\n" );
     }
+    if ( $new_options{tpr} && $new_options{tpr} <= 0 ) {
+        bailout( 1, "Your threads per rank (-tpr) must be greater than zero.\n" );
+    }
 
     # Check for a valid binding policy/level
     if ( $new_options{binding_policy} ) {
@@ -683,7 +692,6 @@ sub get_options
     # Merge in the user-provided values with the pre-set values.  Overwrite old
     # pre-set values with user-provided when duplicates occur.
     my %options = ( %$old_options, %new_options );
-
 
     ### If user did not specify certain parameters, copy the values from what
     ### the resource manager (rm) provided
@@ -725,7 +733,7 @@ sub get_options
         }
     }
 
-    # how many MPI ranks per node the job will use.  If this is NEGATIVE, then 
+    # how many MPI ranks PER NODE the job will use.  If this is NEGATIVE, then 
     # the division is uneven and the node breakdown requires a lot more logic,
     # so flag the npernode parameter and let gen_hostfile() do that
     my $remainder = $options{num_ranks} % $options{num_nodes};
@@ -764,8 +772,8 @@ sub get_options
     {
         # don't bail here; some codes have a lightweight management rank that 
         # in addition to the one-rank-per-core compute ranks
-        printf( STDERR 
-            "WARNING: Your job will put more ranks on each node (%d) than the "
+        ibrun_warn(
+            "Your job will put more ranks on each node (%d) than the "
             ."cores physically available to each node (%d)\n",
             $options{npernode}, $options{sys_ppn} );
     }
@@ -777,6 +785,23 @@ sub get_options
             $options{num_nodes},
             $options{sys_max_nodes} ),
             $options);
+    }
+
+    if ( $options{tpr} 
+    &&  ($options{num_ranks}*$options{tpr}) 
+            > ($options{num_nodes}*$options{rm_ppn}) ) 
+    {
+        ibrun_warn("Your job will use %d ranks, "
+        . "each with %d threads (%d total), but only requested %d nodes "
+        . "and %d cores per node (%d total).  Some cores will be "
+        . "overloaded as a result.\n",
+            $options{num_ranks},
+            $options{tpr},
+            $options{num_ranks}*$options{tpr},
+            $options{num_nodes},
+            $options{rm_ppn}, 
+            $options{num_nodes}*$options{rm_ppn});
+
     }
 
     ### at this point, num_ranks, num_nodes, and npernode are guaranteed to 
@@ -792,7 +817,7 @@ sub bailout
 {
     my $errno = shift;
     my $errmsg = shift;
-    print STDERR "ERROR: $errmsg\n" . CONTACT . "\n";
+    print STDERR "IBRUN ERROR: $errmsg\n" . CONTACT . "\n";
 
     ### Delete temporary nodefile on error
     if ( $options
@@ -805,6 +830,11 @@ sub bailout
     }
 
     exit $errno;
+}
+sub ibrun_warn
+{
+    print STDERR "IBRUN WARNING: ";
+    printf( @_ );
 }
 
 ################################################################################
@@ -844,8 +874,8 @@ ibrun [options] <executable> [executable args]
 
     --tpr|--tpp|--threads-per-rank|--threads-per-process <n>
         how many threads each MPI rank (often referred to as 'MPI process') 
-        will spawn.  Default is either <ppn>/<npernode> if ppn is divisible by
-        npernode, or 1 otherwise.
+        will spawn.  (default: $OMP_NUM_THREADS (if defined), <ppn>/<npernode>
+        if ppn is divisible by npernode, or 1 otherwise)
     
     --switches '<implementation-specific switches>'
         Pass additional command-line switches to the underlying implementation's
@@ -861,9 +891,10 @@ ibrun [options] <executable> [executable args]
     -bl|--binding-level <core|socket|numanode|none>
         Define the level of granularity for CPU affinity for each MPI rank.  
         'core' binds each rank to a single core; 'socket' binds each rank to 
-        all cores on a single CPU socket (good for multithreaded ranks), and 
-        'none' disables all affinity settings. (default: optimized for job 
-        geometry)
+        all cores on a single CPU socket (good for multithreaded ranks); 
+        'numanode' binds each rank to the subset of cores belonging to a
+        numanode; 'none' disables all affinity settings. (default: optimized 
+        for job geometry)
 
     --dryrun
         Do everything except actually launch the application
