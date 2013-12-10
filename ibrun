@@ -138,16 +138,12 @@ dprintf( "Nodefile is %s\n", $options->{nodefile} );
 check_cpu_binding( );
 
 ### Construct the appropriate MPI launcher command line
-my $cmd_string = gen_mpirun_cmd( );
-dprintf( "Command string is [%s] with args [%s]\n", 
-    $cmd_string, 
-    join(' ', @{$options->{cmd_args}}) );
+my @cmd = gen_mpirun_cmd( );
+dprintf( "Command string is [%s]\n", join(' ', @cmd) );
 
 ### Don't pull the trigger if we're doing a dry run
 if ( ! $options->{dryrun} ) {
-    my @cmd_list = @{$options->{cmd_args}};
-    unshift( @cmd_list, $options->{cmd} );
-    system( @cmd_list );
+    system( @cmd );
 
     if ( $? == -1 ) {
         dprintf( "Failed to execute: $!\n" );
@@ -312,8 +308,6 @@ sub gen_nodefile
     }
     close($fh);
 
-
-
     $options->{nodefile} = $filename;
     return;
 }
@@ -393,7 +387,7 @@ sub check_cpu_binding {
 ################################################################################
 sub gen_mpirun_cmd
 {
-    my $launch_cmd = "echo 'ERROR: No MPI launcher found' >&2; echo ";
+    my $launch_cmd;
 
     my $mpi_stack = $options->{mpi_stack};
 
@@ -461,16 +455,15 @@ sub gen_mpirun_cmd
         {
 
             $launch_cmd = "mpirun_rsh";
-            $options->{mpirun_switches} .= sprintf( "-np %d -hostfile %s -export ",
-                $options->{num_ranks}, $options->{nodefile} );
-            $options->{mpirun_switches} .= gen_env($env_hacks);
+            add_mpirun_switches( sprintf( "-np %d", $options->{num_ranks} ) );
+            add_mpirun_switches( sprintf( "-hostfile %s", $options->{nodefile} ) );
+            add_mpirun_switches( '-export' );
         }
         elsif ( $options->{mpi_launcher} eq 'mpiexec.hydra' )
         {
-            $launch_cmd = gen_env($env_hacks);
             $launch_cmd .= "mpiexec.hydra";
-            $options->{mpirun_switches} .= sprintf( "-np %d -hostfile %s ",
-                $options->{num_ranks}, $options->{nodefile} );
+            add_mpirun_switches( sprintf( "-np %d", $options->{num_ranks} ) );
+            add_mpirun_switches( sprintf( "-hostfile %s", $options->{nodefile} ) );
         }
         else
         {
@@ -484,47 +477,45 @@ sub gen_mpirun_cmd
         # Generate binding policy settings
         if (($options->{binding_policy} && $options->{binding_policy} eq 'none')
         ||  ($options->{binding_level} && $options->{binding_level} eq 'none')) {
-            $options->{mpirun_switches} .= '--bind-to-none ' ;
+            add_mpirun_switches( '--bind-to-none' );
         }
         elsif ( $options->{binding_policy} eq 'illogical' ) {
-            $options->{mpirun_switches} .= 
-                sprintf( '--bind-to-core --cpus-per-proc %d ',
-                $options->{tpr} );
+            add_mpirun_switches( '--bind-to-core' );
+            add_mpirun_switches( sprintf( '--cpus-per-proc %d', $options->{tpr} ) );
         }
         else {
             if ( $options->{binding_policy} eq 'scatter' ) {
-                $options->{mpirun_switches} .= '--bysocket ' ;
+                add_mpirun_switches( '--bysocket' );
             }
             elsif ( $options->{binding_policy} eq 'compact' ) {
-                $options->{mpirun_switches} .= '--bycore ';
+                add_mpirun_switches( '--bycore' );
             }
             else {
-                $options->{mpirun_switches} .= '--bind-to-none ';
+                add_mpirun_switches( '--bind-to-none' );
             }
     
             if ( $options->{binding_level} eq 'socket' ) {
-                $options->{mpirun_switches} .= '--bind-to-socket ';
+                add_mpirun_switches( '--bind-to-socket' );
             }
             elsif ( $options->{binding_level} eq 'core' ) {
-                $options->{mpirun_switches} .= '--bind-to-core ';
+                add_mpirun_switches( '--bind-to-core' );
             }
             elsif ( $options->{binding_level} eq 'numanode' ) {
                 if ( $options->{mpi_version} =~ m/(\d\.\d+)/ ) {
                     my $ompi_vers = $1;
                     bailout( 5, "OpenMPI does not support numanode binding until version 1.7.\n" ) if $ompi_vers < 1.7;
                 }
-                $options->{mpirun_switches} .= '--bind-to-numa ';
+                add_mpirun_switches( '--bind-to-numa' );
             }
             else {
-                $options->{mpirun_switches} .= '--bind-to-none ';
+                add_mpirun_switches( '--bind-to-none' );
             }
         }
 
         # Build mpirun command and environment variable injection
-        $launch_cmd = gen_env($env_hacks);
         $launch_cmd .= "orterun";
-        $options->{mpirun_switches} .= sprintf( "-n %d -machinefile %s ",
-            $options->{num_ranks}, $options->{nodefile} );
+        add_mpirun_switches( sprintf( "-n %d", $options->{num_ranks} ) );
+        add_mpirun_switches( sprintf( "-machinefile %s", $options->{nodefile} ) );
     }
 
     ### MPICH2 #################################################################
@@ -539,10 +530,11 @@ sub gen_mpirun_cmd
             $options );
     }
 
-    return sprintf( "%s %s %s",
-        $launch_cmd,
-        $options->{mpirun_switches},
-        $options->{cmd} );
+    ### Actually apply our $env_hacks to the ibrun environment.  Also save
+    ### the shell-parseable string to do the same thing (for future use)
+    my $env_str = gen_env($env_hacks);
+
+    return ( $launch_cmd, @{$options->{mpirun_switches}}, $options->{cmd}, @{$options->{cmd_args}} ) ;
 }
 
 ################################################################################
@@ -552,16 +544,44 @@ sub gen_mpirun_cmd
 sub gen_env
 {
     my $hash = shift;
+    my ( $mods, $output_str ) = (0,  "");
     %$hash = ( $options->{ibrun_env}, %$hash ) if $options->{ibrun_env};
-    my $output = "";
 
     ### only set environment variables that user hasn't already set
-    foreach my $key ( keys(%$hash) ) {
-        unless ( $ENV{$key} ) {
-            $output .= sprintf( "%s=%s ", $key, $hash->{$key} );
+    foreach my $key ( keys(%$hash) ) 
+    {
+        if ( ! $ENV{$key} ) 
+        {
+            # Generate a shell-understandable string for certain mpi launchers
+            $output_str .= " " if $mods++ > 0;
+            $output_str .= sprintf( "%s=%s", $key, $hash->{$key} );
+            dprintf( "Adding %s=%s to the environment\n", $key, $hash->{$key} );
+
+            # Add environment variable to our execution environment
+            $ENV{$key} = $hash->{$key};
         }
     }
-    return $output;
+    dprintf( "Added %d new environment variables to the execution environment\n", $mods );
+    return $output_str;
+}
+################################################################################
+### add_mpirun_switch: append the input parameter to the mpi launcher command's
+### arguments
+################################################################################
+sub add_mpirun_switches
+{
+    my @args = @_;
+    my @switches;
+    foreach my $arg ( @args )
+    {
+        if ( $arg =~ m/^(-\S+)(\s+|=)(.*)/ ) {
+            push( @{$options->{mpirun_switches}}, $1, $3 );
+        }
+        else {
+            push (@{$options->{mpirun_switches}}, $arg );
+        }
+    }
+#   $options->{mpirun_switches} .= $_ . " " foreach @_;
 }
 
 ################################################################################
@@ -586,7 +606,7 @@ sub get_options
             "n|np=i"        =>  \$new_options{num_ranks}, 
             "tpr|tpp|threads-per-rank|threads-per-process=i"  => \$new_options{tpr}, 
             "npernode=i"    =>  \$new_options{npernode},
-            "switches=s"    =>  \$new_options{mpirun_switches},
+            "switches=s"    =>  \$new_options{user_mpirun_switches},
             "bp|binding-policy=s"  =>  \$new_options{binding_policy},
             "bl|binding-level=s"   =>  \$new_options{binding_level},
             "nodefile|machinefile=s"    => \$new_options{nodefile},
@@ -804,6 +824,11 @@ sub get_options
             $options{rm_ppn}, 
             $options{num_nodes}*$options{rm_ppn});
 
+    }
+
+    ### Add mpirun_switches
+    if ( $options{user_mpirun_switches} ) {
+        add_mpirun_switches( split( m/\s+/, $options{user_mpirun_switches} ) );
     }
 
     ### at this point, num_ranks, num_nodes, and npernode are guaranteed to 
