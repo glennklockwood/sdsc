@@ -97,20 +97,24 @@ $options->{cmd_args} = \@ARGV;
     if ( $ENV{LOADEDMODULES} ) {
         my @modules = split( m/:/, $ENV{LOADEDMODULES} );
         foreach my $module ( @modules ) {
-            if ( $module =~ m/mvapich2_ib/ 
-            ||   $module =~ m/mv2profile_ib/ ) {
+            my ($modname, $modvers) = split(m{/}, $module);
+            if ( $modname eq 'mvapich2_ib' 
+            ||   $modname eq 'mv2profile_ib' ) {
                 $options->{mpi_stack} = "mvapich2";
                 $options->{mpi_launcher} = "mpirun_rsh";
+                $options->{mpi_version} = $modvers;
                 last;
             }
-            elsif ( $module =~ m/openmpi_ib/ ) {
+            elsif ( $modname eq 'openmpi_ib' ) {
                 $options->{mpi_stack} = "openmpi";
                 $options->{mpi_launcher} = "orterun";
+                $options->{mpi_version} = $modvers;
                 last;
             }
-            elsif ( $module =~ m/mpich2_ib/ ) {
+            elsif ( $modname =~ m/mpich2_ib/ ) {
                 $options->{mpi_stack} = "mpich2";
                 $options->{mpi_launcher} = "mpiexec.hydra";
+                $options->{mpi_version} = $modvers;
                 last;
             }
         }
@@ -395,6 +399,9 @@ sub gen_mpirun_cmd
             elsif ( $options->{binding_level} eq 'core' ) {
                 $env_hacks->{MV2_CPU_BINDING_LEVEL} = 'core';
             }
+            elsif ( $options->{binding_level} eq 'numanode' ) {
+                $env_hacks->{MV2_CPU_BINDING_LEVEL} = 'numanode';
+            }
             else {
                 $env_hacks->{MV2_ENABLE_AFFINITY} = 0;
             }
@@ -446,6 +453,13 @@ sub gen_mpirun_cmd
             }
             elsif ( $options->{binding_level} eq 'core' ) {
                 $options->{mpirun_switches} .= '--bind-to-core ';
+            }
+            elsif ( $options->{binding_level} eq 'numanode' ) {
+                if ( $options->{mpi_version} =~ m/(\d\.\d+)/ ) {
+                    my $ompi_vers = $1;
+                    bailout( 5, "OpenMPI does not support numanode binding until version 1.7.\n" ) if $ompi_vers < 1.7;
+                }
+                $options->{mpirun_switches} .= '--bind-to-numa ';
             }
             else {
                 $options->{mpirun_switches} .= '--bind-to-none ';
@@ -586,6 +600,7 @@ sub get_options
     if ( $new_options{binding_policy} ) {
         my %valid = (
             'scatter'   => 'scatter',
+            'rr'        => 'scatter',
             'compact'   => 'compact',
             'bunch'     => 'compact',
             'none'      => 'none',
@@ -602,6 +617,8 @@ sub get_options
         my %valid = (
             'core'      => 'core',
             'socket'    => 'socket',
+            'numanode'  => 'numanode',
+            'numa'      => 'numanode',
             'none'      => 'none',
             'off'       => 'none');
         if ( !$valid{$new_options{binding_level}} ) {
@@ -786,7 +803,7 @@ ibrun [options] <executable> [executable args]
         binding level before allocating another, and 'none' disables all 
         affinity settings (default: optimized for job geometry)
     
-    --binding-level <core|socket|none>
+    --binding-level <core|socket|numanode|none>
         Define the level of granularity for CPU affinity for each MPI rank.  
         'core' binds each rank to a single core; 'socket' binds each rank to 
         all cores on a single CPU socket (good for multithreaded ranks), and 
