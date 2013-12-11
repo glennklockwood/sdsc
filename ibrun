@@ -949,6 +949,10 @@ Currently the following features are not supported:
 * VSMP nodes (SDSC Gordon) 
 * -o and -no options
 
+The following edge cases are not necessarily handled gracefully:
+* When -n is less than -N
+* When -n is 1
+
 =head1 AUTHOR
 
 Glenn K. Lockwood (glock@sdsc.edu)
