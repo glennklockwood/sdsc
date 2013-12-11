@@ -264,6 +264,8 @@ sub gen_nodefile
     # print $npernode copies per node into the new nodefile.
     if ( $npernode > 0 )
     {
+        dprintf( "Even number of ranks per node (%d)--hacking nodefile...\n",
+            $npernode );
         @my_npernode = ($npernode) x $options->{num_nodes};
         $options->{tpr} = $options->{rm_ppn} / $npernode unless $options->{tpr};
     }
@@ -274,7 +276,7 @@ sub gen_nodefile
     # the user explicitly says otherwise
     elsif ( $npernode < 0 )
     {
-        dprintf( "hacking hostfile...\n" );
+        dprintf( "Variable number of ranks per node--hacking nodefile...\n" );
         $npernode = abs($npernode);
         @my_npernode = ($npernode) x $options->{num_nodes};
         my $num_ranks = $options->{num_ranks};
