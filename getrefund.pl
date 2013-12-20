@@ -42,7 +42,7 @@ if ( ! $config->{'system'} ) {
     if ( $host =~ m/^trestles-/ )
     {
         $config->{'system'} = 'trestles';
-        $config->{pbs_suffix} = '.trestles-fe1.sdsc.edu';
+        $config->{pbs_suffix} = '.trestles-fe1.local';
         $config->{res_id} = 2792;
     }
     elsif ( $host =~ m/^(gordon|gcn)-/ )
@@ -106,6 +106,8 @@ AND ", $config->{res_id} );
             $ARGV[0],
             $config->{pbs_suffix} );
     }
+
+#   print("Running query:\n$sql\n");
 
     $query = $dbh->prepare($sql);
     $query->execute();
