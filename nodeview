@@ -991,7 +991,11 @@ sub attach_jobs_to_node
         my @job_tags = split(m/[,\s]+/, $node->{jobs});
         foreach ( @job_tags )
         {
-            die "Garbled jobs field [$_]" unless ( $_ =~ m/^\d+\/(\S+)$/ );
+             unless ( $_ =~ m/^\d+\/(\S+)$/ )
+             {
+                warn "Garbled jobs field [$_]";
+                return;
+             }
             $job_ranks{$1}++;
         }
         $node->{jobs} = \%job_ranks;
