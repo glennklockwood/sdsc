@@ -56,7 +56,7 @@ if ( $options{'brief-summary'} )
 ###   nodeinfo: contains all nodes, keyed by node name
 ###   jobinfo: contains all jobs, keyed by pbs jobid
 ###   clusterinfo: contains basic statistical info on all nodes and jobs
-my ( $nodeinfo, $jobinfo, $clusterinfo ) = ( {}, {}, {} );;
+my ( $nodeinfo, $jobinfo, $clusterinfo ) = ( {}, {}, { sus_q => 0, sus_r => 0} );;
 
 ### either read in a cached db
 if ( $options{readdb} )
@@ -568,7 +568,8 @@ sub print_node_list
     print_node() if !$options{quiet};
 
     ### print list of nodes matching filter criteria
-    my $sum = {};
+    my $sum = { sus_q => 0 };
+    my $added = {};
     foreach my $node_name ( @node_list )
     {
         my $node = $nodeinfo->{$node_name};
@@ -585,8 +586,22 @@ sub print_node_list
 
         print_node( $node ) if !$options{quiet};
         add_node_to_stats( $node, $sum );
-        add_job_to_stats( $_, $sum ) foreach @{$node->{joblist}};
+
+        foreach my $job ( @{$node->{joblist}} ) 
+        {
+            my $jobid = $job->{Job_Id};
+            if ( ! $added->{$jobid} ) 
+            {
+                add_job_to_stats( $job, $sum );
+                $added->{$jobid} = 1;
+            }
+        }
     }
+
+    ### queued jobs are not associated with any nodes, so they will never
+    ### appear in $sum.  But we can take the cluster-wide total queued SUs
+    ### from $clusterinfo and present them.
+    $sum->{sus_q} = $clusterinfo->{sus_q};
 
     ### print final summary of printed nodes (optional)
     if ( $options{summary} )
@@ -641,11 +656,13 @@ sub print_summary
     $sum->{n_jobs} = 0 if !$sum->{n_jobs};
 
     # **n_nodes** DOES include offlined nodes but DOES NOT include downed nodes
-    push(@buffer, sprintf("%-13s: %5d\n",   'Total nodes',  $sum->{n_nodes}));
-    push(@buffer, sprintf("%-13s: %5d\n",   'Total cores',  $sum->{np}));
-    push(@buffer, sprintf("%-13s: %5d\n",   'Total jobs',   $sum->{n_jobs}));
-    push(@buffer, sprintf("%-13s: %5d\n",   'Total ranks',  $sum->{n_ranks}));
-    push(@buffer, sprintf("%-13s: %5.1f\n", 'Total load',   $sum->{loadave}));
+    push(@buffer, sprintf("%-17s: %6d\n",   'Total Nodes',  $sum->{n_nodes}));
+    push(@buffer, sprintf("%-17s: %6d\n",   'Total Cores',  $sum->{np}));
+    push(@buffer, sprintf("%-17s: %6d\n",   'Total Jobs',   $sum->{n_jobs}));
+    push(@buffer, sprintf("%-17s: %6d\n",   'Total Ranks',  $sum->{n_ranks}));
+    push(@buffer, sprintf("%-17s: %6.1f\n", 'Total Load',   $sum->{loadave}));
+    push(@buffer, sprintf("%-17s: %6d\n",   'Total SUs Running',  $sum->{sus_r}));
+    push(@buffer, sprintf("%-17s: %6d\n",   'Total SUs Queued',   $sum->{sus_q}));
 
     # the following sums are counted over **n_nodes** nodes (NOT n_nodes_total):
     #   n_ranks np slots_used
@@ -682,8 +699,6 @@ sub print_summary
         ($sum->{totmem} - $sum->{availmem})/BYTE_TO_GBYTE/1024, 
         $sum->{totmem}/BYTE_TO_GBYTE/1024, 
         100 * (1 - $sum->{availmem} / $sum->{totmem}) ));
-    push(@buffer, sprintf("%-17s: %6d\n", 'SUs Running', $clusterinfo->{sus_r}));
-    push(@buffer, sprintf("%-17s: %6d\n", 'SUs Queued', $clusterinfo->{sus_q}));
 
     if ( $options{'brief-summary'} )
     {
@@ -1036,7 +1051,6 @@ sub add_job_to_stats
 {
     my $job = shift or return;
     my $accumulator = shift;
-
 
     my $su_req = 0;
     if ( $job->{Resource_List}->{ppn} 
