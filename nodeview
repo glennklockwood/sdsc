@@ -62,6 +62,15 @@ my ( $nodeinfo, $jobinfo, $clusterinfo ) = ( {}, {}, {} );;
 if ( $options{readdb} )
 {
     ( $nodeinfo, $jobinfo, $clusterinfo ) = read_db( $options{readdb} );
+
+    $clusterinfo = {};
+
+    # regenerate accumulators to allow calculate of total SUs in queue
+    add_node_to_stats( $nodeinfo->{$_}, $clusterinfo ) 
+        foreach keys(%{$nodeinfo});
+
+    add_job_to_stats( $jobinfo->{$_}, $clusterinfo )
+        foreach keys(%{$jobinfo});
 }
 ### or generate (read and synthesize) a new db
 else
@@ -475,6 +484,9 @@ sub digest_job_data
 
             $this_job->{Resource_List}->{nodes} = \@node_properties;
 
+            if ( !$this_job->{Resource_List}->{walltime} ) {
+                warn sprintf "Job %s has no walltime...", $jobid;
+            }
             my ($hr, $min, $sec) = 
                 split(m/:/, $this_job->{Resource_List}->{walltime});
             $this_job->{Resource_List}->{walltimesec} =
@@ -670,6 +682,9 @@ sub print_summary
         ($sum->{totmem} - $sum->{availmem})/BYTE_TO_GBYTE/1024, 
         $sum->{totmem}/BYTE_TO_GBYTE/1024, 
         100 * (1 - $sum->{availmem} / $sum->{totmem}) ));
+    push(@buffer, sprintf("%-17s: %6d\n", 'SUs Running', $clusterinfo->{sus_r}));
+    push(@buffer, sprintf("%-17s: %6d\n", 'SUs Queued', $clusterinfo->{sus_q}));
+
     if ( $options{'brief-summary'} )
     {
         @buffer = ();
@@ -1018,7 +1033,26 @@ sub add_job_to_stats
     my $job = shift or return;
     my $accumulator = shift;
 
-    $accumulator->{n_jobs}++ if $job->{job_state} eq "R";
+
+    my $su_req = 0;
+    if ( $job->{Resource_List}->{ppn} 
+    &&   $job->{Resource_List}->{nodect}
+    &&   $job->{Resource_List}->{walltimesec} )
+    {
+        $su_req = $job->{Resource_List}->{ppn} 
+                * $job->{Resource_List}->{nodect}
+                * $job->{Resource_List}->{walltimesec} / 3600;
+    }
+
+    if ( $job->{job_state} eq "R" ) 
+    {
+        $accumulator->{n_jobs}++;
+        $accumulator->{sus_r} += $su_req;
+    }
+    elsif ( $job->{job_state} eq "Q" )
+    {
+        $accumulator->{sus_q} += $su_req;
+    }
     # todo: add more job stats
     return;
 }
