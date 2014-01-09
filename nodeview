@@ -63,7 +63,7 @@ if ( $options{readdb} )
 {
     ( $nodeinfo, $jobinfo, $clusterinfo ) = read_db( $options{readdb} );
 
-    $clusterinfo = {};
+    $clusterinfo = { sus_q => 0, sus_r => 0 };
 
     # regenerate accumulators to allow calculate of total SUs in queue
     add_node_to_stats( $nodeinfo->{$_}, $clusterinfo ) 
