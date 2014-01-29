@@ -8,11 +8,11 @@
 #
 # This script produces two stages of output
 #
-# Stage 1 ends after the first awk and prints out the following columns:
+# Stage 1 is the output of the first awk and prints out the following columns:
 #    jobid       userid nnodes ppn wallhrs sus_req
 #  1899114       cipres      1   8     100     800
 #
-# Stage 2 is the final output and prints out the following columns:
+# Stage 2 is the output of the second awk and prints out the following columns:
 #       userid  tot_sus tot_jobs    tot_nodes   tot_cores
 #       cipres   267664      119          131        1816
 #
@@ -49,4 +49,4 @@ nodeview $1 --jobview \
                     sus[i] );
             } 
         } 
-    }' \
+    }'
