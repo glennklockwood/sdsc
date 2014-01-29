@@ -1,0 +1,49 @@
+#!/bin/bash
+################################################################################
+#  check-torus-health - iterate over all nodes in the Gordon compute system and
+#    determine if the entire subrack is healthy or not.  If the percent healthy
+#    subrack falls too low, jobs requesting Catalina_maxhops=0 will hang in the
+#    scheduler for a long time
+#
+#  Glenn K. Lockwood, San Diego Supercomputer Center             January 2014
+################################################################################
+
+TMPDIR=/dev/shm
+
+subracks=0
+healthy=0
+for rack in 2 3 4 5 6 7 8 9 13 14 15 16 17 18 19 20
+do
+  for subrack in 1 3 5 7
+  do
+    bad=0
+    found=0
+    for subrackrow in $subrack $((subrack+1))
+    do
+      for slot in 1 2 3 4 5 6 7 8
+      do
+        nodename="gcn-$rack-$subrackrow$slot"
+        pbsnodes $nodename > $TMPDIR/node 2>/dev/null
+        if [ $? -eq 0 ]
+        then
+          let "found++"
+        fi
+        if [ $(grep -Ec 'state = (down|offline)' $TMPDIR/node) -ne 0 ]
+        then
+          let "bad++"
+        fi
+      done
+    done
+    printf "subrack %10s has %2d/%2d bad nodes\n" "gcn-$rack-$subrackrow*" $bad $found
+    if [ $found -eq 16 ]
+    then
+      let "subracks++"
+    fi
+    if [ $bad -eq 0 ]
+    then
+      let "healthy++"
+    fi
+  done
+done
+echo "$healthy of $subracks full subracks are healthy ($((100 * $healthy / $subracks))%)"
+rm -v $TMPDIR/node
