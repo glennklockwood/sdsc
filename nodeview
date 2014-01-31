@@ -193,6 +193,7 @@ sub get_options
 
         # show only jobs, not nodes (default:off)
             "jobview"       => \$options{jobview},
+            "extended"      => \$options{extended},
 
         # show only nodes with given state (default:all states)
             "s|state=s"     => \$options{showstate},
@@ -939,41 +940,89 @@ sub print_job
                    "C" => "Cmpletd",    "T" => "Transfr",
                    "W" => "Waiting",    "S" => "Suspend" );
 
-    my $head_format = "%9s %7s %6s %-12s %-12.12s %12s %4s %10s\n";
+    my $head_format =  "%9s %7s %6s %-12s %-12.12s %12s %4s %10s\n";
     my $print_format = "%9d %7s %6s %-12s %-12.12s %12s %3d%% %10s\n";
+    my $head_format_ext =  "%9s %7s %6s %-12s %-12.12s %12s %4s %10s %12s %12s %12s %12s\n";
+    my $print_format_ext = "%9d %7s %6s %-12s %-12.12s %12s %3d%% %10s %12.2f %12.2f %12.2f %12.2f\n";
+
     my $job = shift;
     my $ncols = shift;  # printing jobs in html format currently not implemented
 
-    if ( !defined($job) )
-    {
-        printf( $head_format,
-            "JobID",
-            "State",
-            "#Nods",
-            "User",
-            "JobName",
-            "WallReq",
-            '%fin',
-            'Queue');
+    if ( $options{extended} ) {
+        if ( !defined($job) )
+        {
+             printf( $head_format_ext,
+                "JobID",
+                "State",
+                "#Nods",
+                "User",
+                "JobName",
+                "WallReq",
+                '%fin',
+                'Queue',
+                'Walltime(hr)',
+                'CPUtime(hr)',
+                'PhysMem(MB)',
+                'VirtMem(MB)');
+        }
+        else
+        {
+            printf( $print_format_ext,
+                (split(m/\./, $job->{Job_Id}))[0],
+                ( defined($states{$job->{job_state}}) 
+                    ? $states{$job->{job_state}} 
+                    : "??? - " . $job->{job_state} ),
+                (sprintf( "%d:%d",
+                    $job->{Resource_List}->{nodect},
+                    ($job->{Resource_List}->{ppn} 
+                        ? $job->{Resource_List}->{ppn} 
+                        : $job->{node}->{np}))),
+                (split(m/@/, $job->{Job_Owner}))[0],
+                $job->{Job_Name},
+                $job->{Resource_List}->{walltime},
+                int(100 * $job->{resources_used}->{walltimesec}
+                    / $job->{Resource_List}->{walltimesec}),
+                $job->{queue},
+                $job->{resources_used}->{walltimesec}/3600.0,
+                $job->{resources_used}->{cputsec}/3600.0,
+                $job->{resources_used}->{mem}/1024.0/1024.0,
+                $job->{resources_used}->{vmem}/1024.0/1024.0
+                );
+        }
     }
     else
     {
-        printf( $print_format,
-            (split(m/\./, $job->{Job_Id}))[0],
-            ( defined($states{$job->{job_state}}) 
-                ? $states{$job->{job_state}} 
-                : "??? - " . $job->{job_state} ),
-            (sprintf( "%d:%d",
-                $job->{Resource_List}->{nodect},
-                ($job->{Resource_List}->{ppn} 
-                    ? $job->{Resource_List}->{ppn} 
-                    : $job->{node}->{np}))),
-            (split(m/@/, $job->{Job_Owner}))[0],
-            $job->{Job_Name},
-            $job->{Resource_List}->{walltime},
-            int(100 * $job->{resources_used}->{walltimesec}
-                / $job->{Resource_List}->{walltimesec}),
-            $job->{queue});
+        if ( !defined($job) )
+        {
+            printf( $head_format,
+                "JobID",
+                "State",
+                "#Nods",
+                "User",
+                "JobName",
+                "WallReq",
+                '%fin',
+                'Queue');
+        }
+        else
+        {
+            printf( $print_format,
+                (split(m/\./, $job->{Job_Id}))[0],
+                ( defined($states{$job->{job_state}}) 
+                    ? $states{$job->{job_state}} 
+                    : "??? - " . $job->{job_state} ),
+                (sprintf( "%d:%d",
+                    $job->{Resource_List}->{nodect},
+                    ($job->{Resource_List}->{ppn} 
+                        ? $job->{Resource_List}->{ppn} 
+                        : $job->{node}->{np}))),
+                (split(m/@/, $job->{Job_Owner}))[0],
+                $job->{Job_Name},
+                $job->{Resource_List}->{walltime},
+                int(100 * $job->{resources_used}->{walltimesec}
+                    / $job->{Resource_List}->{walltimesec}),
+                $job->{queue});
+        }
     }
 }
 
@@ -1274,6 +1323,8 @@ This program parses the output of pbsnodes and qstat and provides various differ
 
 --jobview
     show only jobs, not nodes (default:off)
+    --extended
+        show more columns in --jobview (default:off)
 
 -s|--state=state
     show only nodes with given state (default:all states)
