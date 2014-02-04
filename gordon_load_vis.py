@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 import fileinput
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import re
 
@@ -45,7 +47,6 @@ def hinton(matrix, rack, ax, cpugrid):
         if cpugrid[y, x] > ppn:
             my_size_x = size_x * 8
             my_size_y = size_y * 2
-            print "Got a supernode with load %f in rack %d, ppn=%d, x=%d, y=%d" % (w, rack, cpugrid[y,x], x, y)
         else:
             my_size_x = size_x
             my_size_y = size_y
@@ -63,7 +64,6 @@ def hinton(matrix, rack, ax, cpugrid):
 
     # draw supernodes last so they are on top of the compute nodes
     for rect in supernodes:
-        print "adding a supernode!"
         ax.add_patch(rect)
 
 if __name__ == '__main__':
@@ -108,7 +108,6 @@ if __name__ == '__main__':
         load = float(match.group(5))
 
         if rack != thisrack:
-            print "Switching to rack %d" % rack
             if thisrack >= 0:
                 hinton( loadgrid, thisrack, ax, cpugrid )
 
