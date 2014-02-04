@@ -12,7 +12,6 @@ import sys
 ### get_sys_config: define system and diagram geometry here
 def get_sys_config():
     hostname=platform.node()
-    hostname='trestles'
     if hostname.find("gordon") != -1 or hostname.find("gcn") != -1:
         config = {  'rack_xdim':    8,         # nodes per rack in x direction
                     'rack_ydim':    8,         # nodes per rack in y direction
