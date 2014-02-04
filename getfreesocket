@@ -101,12 +101,26 @@ for my $PID ( @pids )
     my %cores_in_use;
     foreach my $taskid ( @taskids )
     {
+        my @cpulists;
         next unless $taskid =~ m/^\d+$/;
         open(TASKSTAT,"/proc/$PID/task/$taskid/status") or die;
         while ( my $line = <TASKSTAT> )
         {
             next unless $line =~ m/^Cpus_allowed_list:\s*(.*)\s*$/;
-            my $cpulist_for_task = $1;
+            push(@cpulists, $1);
+        }
+
+        # hack for pre-2.6.32 kernels
+        if ( ! @cpulists )
+        {
+            my $taskset_output = `/bin/taskset -c -p $PID`;
+            my $cpu_range = (split(m/\s+/, $taskset_output))[5];
+            push(@cpulists, $cpu_range);
+        }
+
+        foreach ( @cpulists )
+        {
+            my $cpulist_for_task = $_;
             while ( $cpulist_for_task =~ m/(\d+)-(\d+)/ )
             {
                 my @range = $1 .. $2;
@@ -114,9 +128,10 @@ for my $PID ( @pids )
                 $cpulist_for_task =~ s/\d+-\d+/$newstring/;
             }
     
-            my @cpulist_for_task = split(m/(\s+|,)/, $cpulist_for_task);
+            my @cpulist_for_task = split(m/[\s,]+/, $cpulist_for_task);
             $cores_in_use{$_} = 1 foreach (@cpulist_for_task);
         }
+
         close(TASKSTAT);
     }
 
