@@ -1,4 +1,11 @@
 #!/usr/bin/env python
+################################################################################
+###  load-vis.py: use matplotlib to assign some value to each node and
+###    create a graphic likening those values to the physical layout of 
+###    those nodes within the cluster.
+###
+###  Glenn K. Lockwood, San Diego Supercomputer Center          February 2014
+################################################################################
 
 import fileinput
 import numpy as np
@@ -9,6 +16,7 @@ import re
 import platform
 import sys
 
+################################################################################
 ### get_sys_config: define system and diagram geometry here
 def get_sys_config():
     hostname=platform.node()
@@ -35,6 +43,7 @@ def get_sys_config():
             sys.stderr.write("Unknown system %s; assuming %s.\n" % (hostname, config['system']))
     return config
 
+################################################################################
 ### draw_rack: wrapper function that calls the machine-specific draw function
 def draw_rack( loadgrid, cpugrid, rack, ax, config ):
     if config['system'] == 'gordon':
@@ -42,9 +51,10 @@ def draw_rack( loadgrid, cpugrid, rack, ax, config ):
     elif config['system'] == 'trestles':
         draw_rack_trestles( loadgrid, cpugrid, rack, ax, config )
 
-### Subroutine to draw Gordon's racks.  Note that the meaning of x/y are
-### currently screwed up in the code, but the end result is right.  I need
-### to fix this someday.
+################################################################################
+### draw_rack_gordon: subroutine to draw Gordon's racks.  Note that the 
+###   meaning of x/y are currently screwed up in the code, but the end result is
+### right.  I need to fix this someday.
 def draw_rack_gordon( loadgrid, cpugrid, rack, ax, config):
 
     ppn = config['ppn']
@@ -109,7 +119,9 @@ def draw_rack_gordon( loadgrid, cpugrid, rack, ax, config):
     for rect in supernodes:
         ax.add_patch(rect)
 
-### Subroutine to draw Trestles's racks.  TODO: merge this with draw_rack_gordon
+################################################################################
+### draw_rack_trestles: Subroutine to draw Trestles's racks.  TODO: merge this 
+###   with draw_rack_gordon
 def draw_rack_trestles( loadgrid, cpugrid, rack, ax, config):
 
     ppn = config['ppn']
@@ -168,21 +180,10 @@ def draw_rack_trestles( loadgrid, cpugrid, rack, ax, config):
 
         ax.add_patch(rect)
 
-
-if __name__ == '__main__':
-
-    config = get_sys_config()
-
-    ### initialize the plot
-    ax = plt.gca()
-#   ax.patch.set_facecolor('white')
-    ax.patch.set_facecolor((1,1,1,0.0))
-    ax.axis('off')
-    
-    ax.set_aspect('equal', 'box')
-    ax.xaxis.set_major_locator(plt.NullLocator())
-    ax.yaxis.set_major_locator(plt.NullLocator())
-    cm = plt.get_cmap('Blues')
+################################################################################
+### ingest_and_plot_load: read the output of `nodeview --nocolor`, turn
+###   into load values, populate racks, and draw them
+def ingest_and_plot_load( ax ):
 
     linerex = re.compile(r"""
         ^(\S+)-(\d+)-(\d+)\s+
@@ -196,13 +197,10 @@ if __name__ == '__main__':
         (\S+)\s*$""", re.VERBOSE)
     staterex = re.compile("(offline|down)")
 
-    cpugrid = np.empty([config['rack_xdim'],config['rack_ydim']])
     cpugrid[:] = config['ppn']
-    loadgrid = np.empty([config['rack_xdim'],config['rack_ydim']])
     loadgrid[:] = -2.0      # -2 means node doesn't exist in queue
     this_rack = -1
     last_rack_printed = -1;
-    ax = plt.gca()
 
     for line in fileinput.input():
         match = linerex.match(line)
@@ -241,6 +239,79 @@ if __name__ == '__main__':
     # don't forget about the final rack
     if last_rack_printed != this_rack and this_rack >= 0 and nodename != "ion":
         draw_rack( loadgrid, cpugrid, this_rack, ax, config )
+
+################################################################################
+### ingest_and_plot_outage: read the output of `tally-outage.pl`,
+###   populate racks, and draw them
+def ingest_and_plot_outage( ax ):
+
+    linerex = re.compile(r"""^(\S+)-(\d+)-(\d+)\s+(\S+)\s*$""")
+
+    cpugrid[:] = config['ppn']
+    loadgrid[:] = -2.0      # -2 means node doesn't exist in queue
+    this_rack = -1
+    last_rack_printed = -1;
+
+    for line in fileinput.input():
+        match = linerex.match(line)
+        if not match:
+            continue
+        nodename = match.group(1)
+        rack = int(match.group(2))
+        slot = int(match.group(3))
+        load = float(match.group(4))
+
+        if rack != this_rack:
+            if this_rack >= 0:
+                draw_rack( loadgrid, cpugrid, this_rack, ax, config )
+                last_rack_printed = this_rack
+
+            loadgrid[:] = -2.0      # initialize a new rack of unknown nodes
+            cpugrid[:] = config['ppn']
+            this_rack = rack
+
+        if staterex.match(match.group(6)):
+            load = -1.00
+
+        # Gordon's node numbering is encoded in tens and ones digits, not 
+        # ordered sequentially
+        if config['system'] == "gordon":
+            x = int(slot/10) - 1    # row
+            y = slot % 10 - 1       # column
+        else:
+            x = 0                   # row
+            y = slot - 1            # column
+
+        loadgrid[x, y] = load
+        cpugrid[x, y] = cpus
+
+    # don't forget about the final rack
+    if last_rack_printed != this_rack and this_rack >= 0 and nodename != "ion":
+        draw_rack( loadgrid, cpugrid, this_rack, ax, config )
+
+################################################################################
+### main function
+if __name__ == '__main__':
+
+    config = get_sys_config()
+
+    ### initialize the plot
+    ax = plt.gca()
+#   ax.patch.set_facecolor('white')
+    ax.patch.set_facecolor((1,1,1,0.0))
+    ax.axis('off')
+    
+    ax.set_aspect('equal', 'box')
+    ax.xaxis.set_major_locator(plt.NullLocator())
+    ax.yaxis.set_major_locator(plt.NullLocator())
+    cm = plt.get_cmap('Blues')
+
+    cpugrid = np.empty([config['rack_xdim'],config['rack_ydim']])
+    loadgrid = np.empty([config['rack_xdim'],config['rack_ydim']])
+    ax = plt.gca()
+
+    ingest_and_plot_load( ax )
+    #ingest_and_plot_outage( ax )
 
     ax.autoscale_view()
     ax.invert_yaxis()
