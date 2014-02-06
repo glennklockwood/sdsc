@@ -11,14 +11,6 @@
 use strict; 
 use warnings;
 use Sys::Hostname;
-### a hack for trestles, which does not come with the necessary XML parsers
-BEGIN 
-{ 
-    if ( hostname() =~ m/^trestles/ ) {
-        use lib "/home/glock/perl/lib/perl5/site_perl/5.8.8";
-        use lib "/home/glock/perl/lib/perl5/site_perl";
-    }
-}
 use Data::Dumper;
 use Term::ANSIColor;
 
