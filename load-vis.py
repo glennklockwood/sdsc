@@ -24,7 +24,7 @@ def get_sys_config():
         config = {  'rack_xdim':    8,         # nodes per rack in x direction
                     'rack_ydim':    8,         # nodes per rack in y direction
                     'subrack_ydim': 2,         # rows per subrack (if applicable)
-                    'racks_per_row':10,        # racks per row in final plot
+                    'racks_per_row':11,        # racks per row in final plot
                     'size_x':       0.5,       # width of each node's graphic
                     'size_y':       1.0,       # height of each node's graphic
                     'system':       'gordon',  # the system's name
@@ -66,8 +66,8 @@ def draw_rack_gordon( loadgrid, cpugrid, rack, ax, config):
     # how many racks do we draw per row on the plot?
     racks_per_row = config['racks_per_row']
 
-    # coordinates in rack space
-    rack_x = float(rack%racks_per_row)
+    # coordinates in rack space.  use (rack-1) because there is no rack0
+    rack_x = float((rack-1)%racks_per_row)
     rack_y = float(int(rack / racks_per_row))
 
     # coordinates in node space
@@ -77,7 +77,7 @@ def draw_rack_gordon( loadgrid, cpugrid, rack, ax, config):
     node_y = float(rack_y * ((2+config['rack_ydim'])*size_y))
 
     # add text label for this rack
-    plt.text(node_x, node_y-0.1, "rack %d" % rack)
+    plt.text(node_x, node_y-0.1, "rack%d" % rack)
 
     supernodes = list()
 
