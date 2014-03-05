@@ -209,7 +209,7 @@ sub query_splunk {
         foreach my $field ( @{$result->{field}} ) {
             next unless $field->{k} eq '_raw';
             my $content = $field->{v}->{content} . "\n";
-            $content =~ s/$_ Message forwarded from/::/ foreach split(m/\s+/, $config->{fe});
+            $content =~ s/(trestles|gordon)-fe\d.sdsc.edu Message forwarded from/::/ foreach split(m/\s+/, $config->{fe});
             push(@output, $content);
         }
     }
