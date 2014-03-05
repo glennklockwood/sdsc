@@ -11,5 +11,5 @@ for host in $(pcregrep -o 'exec_host=[^\s]+' $job.trace | \
 do
   echo ""
   echo "=== $host ==="
-  ssh $host "grep $job /opt/torque/mom_logs/*"
+  ssh $host "grep $job /var/spool/torque/mom_logs/*"
 done
