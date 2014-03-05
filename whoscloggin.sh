@@ -29,24 +29,34 @@ else
   exit 1
 fi
 
-printf "%12s %5s %5s %5s %7s\n" "user" "jobs" "nodes" "cores" "SUs"
-nodeview $1 --jobview \
+printf "%12s %5s %5s %5s %5s %7s %7s\n" "user" "jobs" "nodes" "cores" "hours" "SUs" "SUs(q)"
+nodeview $1 --jobview 2>/dev/null\
     | sed -e 's/:/ /g' \
-    | awk '/Runn/ { printf( "%8d %12s %2d %2d %4d %6d\n", $1, $5, $3, $4, $7, $3*$4*($7+$8/60.0+$9/3600.0) ) }' \
+    | awk '/(Running|Queued)/ { printf( "%12s %8d %12s %2d %2d %4d %6d\n", $2, $1, $5, $3, $4, $7, $3*$4*($7+$8/60.0+$9/3600.0) ) }' \
     | awk '{ 
-        sus[$2] += $6; 
-        njob[$2]++; 
-        nnod[$2] += $3 * $4 / '$ppn';
-        ncores[$2] += $3*$4;
+        user=$3;
+        njob[user]++; 
+        if ( $1 == "Running" ) {
+          sus_r[user] += $7; 
+          njob_r[user]++; 
+          nnod_r[user] += $4 * $5 / '$ppn';
+          ncores_r[user] += $4*$5;
+          nhrs_r[user] += $6;
+        }
+        else if ( $1 == "Queued" ) { 
+          sus_q[user] += $7;
+        }
     } END { 
-        for (i in sus) { 
+        for (i in njob) { 
             if ( i != "" ) { 
-                printf("%12s %5d %5d %5d %7d\n", 
+                printf("%12s %5d %5d %5d %5d %7d %7d\n", 
                     i, 
-                    njob[i],
-                    nnod[i],
-                    ncores[i], 
-                    sus[i] );
+                    njob_r[i],
+                    nnod_r[i],
+                    ncores_r[i], 
+                    nhrs_r[i],
+                    sus_r[i],
+                    sus_q[i] );
             } 
         } 
     }'
