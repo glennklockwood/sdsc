@@ -245,13 +245,17 @@ sub load_job_list_from_logs
 
         # convert 00:00:00 into number of seconds.  sometimes 
         # Resource_List.walltime is not defined (slipped through jobfilter?)
+
         $job{Resource_List}{walltime} = 
             clock_to_seconds( $job{Resource_List}{walltime} ) 
             if defined($job{Resource_List}{walltime});
+
         $job{resources_used}{walltime} = 
             clock_to_seconds( $job{resources_used}{walltime} );
+
         $job{resources_used}{cput} = 
             clock_to_seconds( $job{resources_used}{cput} );
+
         if ( $job{resources_used}->{walltime} )
         {
             $job{exp_factor} = ($job{end} - $job{etime}) / 
@@ -262,10 +266,12 @@ sub load_job_list_from_logs
             $job{exp_factor} = -1;
         }
 
-        if ( $job{Resource_List}{nodes} =~ m/^(\d+):ppn=(\d+)$/ )
+        if ( $job{Resource_List}{nodes} =~ m/^(\d+):ppn=(\d+)/ )
         {
             $job{Resource_List}{processors} = $1 * $2;
         }
+
+        $job{charge} = int($job{Resource_List}{processors} * $job{resources_used}{walltime} / 3600.0 + 0.5);
 
         push( @job_list, \%job );
 #       printf( Dumper(\%job) );
