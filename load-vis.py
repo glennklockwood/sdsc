@@ -166,6 +166,7 @@ class Rack:
 ### get_sys_config: define system and diagram geometry here
 def get_sys_config():
     hostname=platform.node()
+    hostname='gordon'
     if hostname.find("gordon") != -1 or hostname.find("gcn") != -1:
         config = {  'rack_xdim':    8,         # nodes per rack in x direction
                     'rack_ydim':    8,         # nodes per rack in y direction
@@ -249,7 +250,6 @@ def ingest_and_plot_load( ax ):
         racks[rack_id].cpugrid[x, y] = cpus
 
     for rack in racks:
-        print "Drawing rack %s" % rack
         racks[rack].draw( ax, config )
 
 ################################################################################
@@ -320,9 +320,9 @@ if __name__ == '__main__':
     ax = plt.gca()
 
     ingest_and_plot_load( ax )
-    #ingest_and_plot_outage( ax )
+#   ingest_and_plot_outage( ax )
 
     ax.autoscale_view()
     ax.invert_yaxis()
-    plt.show()
+#   plt.show()
     plt.savefig('%s-load.png' % config['system'], bbox_inches='tight')
