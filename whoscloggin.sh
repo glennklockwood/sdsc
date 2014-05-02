@@ -29,7 +29,7 @@ else
   exit 1
 fi
 
-printf "%12s %5s %5s %5s %5s %7s %7s\n" "user" "jobs" "nodes" "cores" "hours" "SUs" "SUs(q)"
+printf "%12s %5s %5s %5s %5s %7s %7s\n" "user" "jobs" "nodes" "cores" "hours" "SUs" "SUs.q"
 nodeview $1 --jobview 2>/dev/null\
     | sed -e 's/:/ /g' \
     | awk '/(Running|Queued)/ { printf( "%12s %8d %12s %2d %2d %4d %6d\n", $2, $1, $5, $3, $4, $7, $3*$4*($7+$8/60.0+$9/3600.0) ) }' \
