@@ -654,7 +654,7 @@ sub print_summary
     push(@buffer, sprintf("%-17s: %6d\n",   'Total Jobs',   $sum->{n_jobs}));
     push(@buffer, sprintf("%-17s: %6d\n",   'Total Ranks',  $sum->{n_ranks}));
     push(@buffer, sprintf("%-17s: %6.1f\n", 'Total Load',   $sum->{loadave}));
-    push(@buffer, sprintf("%-17s: %6d\n",   'Total SUs Running',  $sum->{sus_r}));
+    push(@buffer, sprintf("%-17s: %6d\n",   'Total SUs Running',  ( $sum->{sus_r} ? $sum->{sus_r} : 0 ) ));
     push(@buffer, sprintf("%-17s: %6d\n",   'Total SUs Queued',   $sum->{sus_q}));
 
     # the following sums are counted over **n_nodes** nodes (NOT n_nodes_total):
@@ -684,6 +684,11 @@ sub print_summary
         'Slot Utilization', 
         $sum->{slots_used}, $sum->{n_slots},
         100 * $sum->{slots_used} / $sum->{n_slots}));
+    push(@buffer, sprintf("%-17s: %6d/%6d (%5.1f%%)\n", 
+        'Avail Slot Util', 
+        $sum->{slots_used}, $sum->{n_slots_up},
+        100 * $sum->{slots_used} / $sum->{n_slots_up}));
+
     # the choice of totmem instead of physmem is not firm
     #   physmem = total physical memory available
     #   totmem = total virtual memory available (physmem+swap)
@@ -1126,8 +1131,11 @@ sub add_node_to_stats
     # n_nodes = number of nodes that are not flagged as down (offline nodes
     #           still contribute to other statistical quantities because they 
     #           are still running
-    # n_nodes_down = number of nodes that are flagged as down OR offline
-    # n_nodes_total = number of nodes coming out of pbsnodes (n_nodes+n_nodes_down)
+    # n_nodes_down  = number of nodes that are flagged as down OR offline
+    # n_nodes_total = number of nodes coming out of pbsnodes 
+    #                 (n_nodes+n_nodes_down)
+    # n_slots_up    = number of slots eligible to run jobs (nodes that aren't 
+    #                 down/offline)
     if ( defined($node->{status}->{state})
     &&  !grep { m/down/ } ( @{$node->{state}} ) )
     {
@@ -1139,8 +1147,14 @@ sub add_node_to_stats
     }
     $accumulator->{n_slots} += $node->{n_slots};
     $accumulator->{n_nodes_total}++;
-    $accumulator->{n_nodes_down}++ if grep(m/(offline|down)/, 
-                                        @{$node->{state}});
+    if ( grep(m/(offline|down)/, @{$node->{state}}) ) 
+    {
+        $accumulator->{n_nodes_down}++ 
+    }
+    else
+    {
+        $accumulator->{n_slots_up} += $node->{n_slots};
+    }
     return;
 }
 
@@ -1178,7 +1192,7 @@ sub write_db
         nodeinfo    => $nodeinfo,
         jobinfo     => $jobinfo,
         clusterinfo => $clusterinfo
-    }, $filename );
+    }, $filename ) or die $!;
     return;
 }
 
