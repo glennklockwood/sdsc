@@ -28,7 +28,7 @@ plot.data.y <- list(    sus  =  compute.data$sus[tmp.compute.xvec] / 1000,
 file.output = paste(sep='', system, '-all.png')
 
 plot.legend <- c(   'SUs Running',  'SUs Queued'    )
-plot.colors <- c(   '#E41A1C',      '#984EA3'       )
+plot.colors <- c(   '#E41A1C',      '#377EB8'       )
 plot.ltys   <- c(     'solid',        'solid'         )
 plot.lws    <- c( 2, 2 )
 plot.ismooth <- c( 0, 0 )
