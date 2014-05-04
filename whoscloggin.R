@@ -51,7 +51,7 @@ gen.plot <- function( sorted.data, metric, output.file ) {
     ### finally generate the plot
     png(output.file, width=640, height=480, bg='transparent')
     par(new=FALSE, mar=c(0, 0, 0, 0))
-    pie(plot$y, labels=plot$label, col=plot$color)
+    pie(plot$y, labels=plot$label, col=plot$color, cex=1.75)
     dev.off()
 }
 
