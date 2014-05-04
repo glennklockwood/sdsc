@@ -41,8 +41,8 @@ gen.plot <- function( sorted.data, metric, output.file ) {
         plot <- data.frame( x, y, label, color, stringsAsFactors=FALSE)
     } else {
         # plot all the users
-        x <- sorted.data[0:9,1]
-        y <- sorted.data[0:9,metric]
+        x <- sorted.data[,1]
+        y <- sorted.data[,metric]
         label <- paste( x, ', ', round(y/1000), 'k', sep="")
         color <- rainbow(length(y))
         plot <- data.frame( x, y, label, color, stringsAsFactors=FALSE)
