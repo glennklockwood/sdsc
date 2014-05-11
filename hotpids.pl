@@ -11,7 +11,7 @@ use Sys::Hostname;
 
 ### Configuration parameters ###################################################
 # @exempt_users can run hot/fat pids on the login nodes
-my @exempt_users = qw/root catalina/;
+my @exempt_users = qw/root catalina kenneth/;
 # $min_xxx is the threshold for per-process consumption, below which processes
 #   are not reported.  processes running for less than $min_time are never
 #   reported

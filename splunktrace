@@ -16,12 +16,12 @@ use lib '/home/diag/glock/perl5/lib/perl5';
 ### Read in Splunk credentials and other runtime parameters from ~/.splunkconf
 sub read_config {
     my $config = {
-        blacklist   =>  'sdsc_stats pam_unix ntpd ntpdate sshd crond '
+        blacklist   =>  'sdscstats pam_unix ntpd ntpdate sshd crond '
                      .  'audit 411-alert-handler suppressed anacron postfix '
                      .  '411_alert cron.daily cron.hourly',
         nodesuffix  =>  '.sdsc.edu',
         app         =>  'search',
-        fe          =>  'trestles-fe1.sdsc.edu gordon-fe2.sdsc.edu',
+        fe          =>  'trestles-fe2.sdsc.edu gordon-fe2.sdsc.edu',
         joblifetime =>  300,
         };
     open CONF, "<" . $ENV{'HOME'} . "/.splunkconf" or die;
