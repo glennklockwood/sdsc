@@ -147,9 +147,10 @@ class Rack:
             else:
                 color = cm((0.50 + w/float(self.cpugrid[x,y]))/1.25)
 
-            # coordinates on the actual plot
+            # coordinates on the actual plot.  Trestles is racked upside-down so
+            # that the lowest node slots are at the bottom of the rack
             plot_x = x*size_x + node_x
-            plot_y = y*size_y + node_y
+            plot_y = (config['rack_ydim']-y)*size_y + node_y
 
             my_size_x = size_x
             my_size_y = size_y
@@ -166,7 +167,6 @@ class Rack:
 ### get_sys_config: define system and diagram geometry here
 def get_sys_config():
     hostname=platform.node()
-    hostname='gordon'
     if hostname.find("gordon") != -1 or hostname.find("gcn") != -1:
         config = {  'rack_xdim':    8,         # nodes per rack in x direction
                     'rack_ydim':    8,         # nodes per rack in y direction
