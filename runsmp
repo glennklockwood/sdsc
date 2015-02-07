@@ -1,0 +1,195 @@
+#!/usr/bin/env perl
+#
+#  Wrapper to find x number of cores on a single socket and run a subprocess
+#  that is bound to just those cores.
+#
+#  Glenn K. Lockwood, February 2015
+#
+
+use strict;
+use warnings;
+
+my $FAKE_CORE_MAP = {
+    "0" => { 
+         '0' => 98.0,
+         '1' => 98.0,
+         '2' =>  0.0,
+         '3' =>  0.0,
+    },
+    "1" => { 
+         '4' => 98.0,
+         '5' =>  0.0,
+         '6' =>  0.0,
+         '7' =>  0.0,
+    },
+    "2" => { 
+         '8' =>  0.0,
+         '9' =>  0.0,
+        '10' =>  0.0,
+        '11' =>  0.0,
+    },
+};
+
+sub expand_number_range {
+    my $str = shift;
+    while ( $str =~ m/(\d+)-(\d+)/ ) {
+        my $st = $1;
+        my $e = $2;
+        my $expand = join(',', $st .. $e);
+        $str =~ s/(\d+)-(\d+)/$expand/;
+    }
+    my @list = split(m/,/, $str);
+    return \@list;
+}
+
+#
+# Generate a socket map that contains cores=>sockets and the load on each core
+#
+sub get_socket_core_map {
+    ### generate a map of sockets=>cores and cores=>sockets
+    open(CPUINFO, "/proc/cpuinfo") or die;
+    my $sockets;
+    my @cores;
+    my $core_id;
+    while ( my $line = <CPUINFO> ) {
+        if ( $line =~ m/^processor\s+:\s+(\d+)/ ) {
+            $core_id = $1;
+        }
+        elsif ( $line =~ m/^physical id\s+:\s+(\d+)/ ) {
+            my $socket_id = $1;
+            $sockets->{$socket_id}->{$core_id} = {};
+            $cores[$core_id] = $socket_id;
+        }
+    }
+
+    ### now calculate load on each core in the socket map
+    my @pids;
+    my $pidlist = `ps -me -otid= -opcpu= -opsr=`;
+    foreach my $line ( split(m/(\n\r?)+/, $pidlist) )
+    {
+        next unless $line =~ m/^\s*(\d+)\s+(\S+)\s+(\d+)\s*$/;
+        my ( $pid, $load, $core_id ) = ( $1, $2, $3 );
+        my $socket_id = $cores[$core_id];
+        $sockets->{$socket_id}->{$core_id}->{load} += $load;
+
+        ### check for a restricted set of cpus (!= 0xffffffff)
+        my $taskset_output = `taskset -p $pid 2>/dev/null`;
+        my $cpu_mask = (split(m/\s+/, $taskset_output))[5];
+        if ( defined($cpu_mask) && $cpu_mask ne "ffffffff" ) {
+            $taskset_output = `taskset -c -p $pid 2>/dev/null`;
+            my $cpu_range = expand_number_range( (split(m/\s+/, $taskset_output))[5] );
+#           printf(STDERR "pid %5d is bound to cores %s", $pid, join(":", @$cpu_range) );
+            if ( $load < 5.0 ) {
+#               print(STDERR "...but its load is < 5.0%, so it gets a pass\n");
+            }
+            else {
+#               print(STDERR "...so an obligation is in place\n" );
+                foreach my $core( @$cpu_range ) {
+                    $sockets->{$socket_id}->{$core_id}->{obligations}++;
+                }
+            }
+        }
+    }
+
+    return $sockets;
+}
+
+#
+# Given a socket map, print it out nicely
+#
+sub print_socket_core_map {
+    my $sockets = get_socket_core_map();
+    for my $socket_id ( sort { $a <=> $b } ( keys( %$sockets ) ) ) {
+        printf(STDERR "socket %d\n", $socket_id );
+        for my $core_id ( sort { $a <=> $b } ( keys( %{$sockets->{$socket_id}} ) ) ) {
+            if ( !defined($sockets->{$socket_id}->{$core_id}->{obligations}) ) {
+                $sockets->{$socket_id}->{$core_id}->{obligations} = 0;
+            }
+            printf(STDERR "  core %3d load %8.2f obligations %2d\n", 
+                $core_id, 
+                $sockets->{$socket_id}->{$core_id}->{load}, 
+                $sockets->{$socket_id}->{$core_id}->{obligations} );
+        }
+    }
+}
+
+
+#
+# Given a socket map, return a reduced socket map listing only the free 
+# (unloaded) cores.  Note that this returns a hash of arrays, not a hash
+# of hashes!
+#
+sub get_free_core_list {
+    my $sockets = shift;
+    my $free_sockets;
+    for my $socket_id ( keys(%$sockets) ) {
+        my $socket_load = 0.0;
+        my @cores_on_socket = sort { $a <=> $b } ( keys( %{$sockets->{$socket_id}} ) );
+        my @free_cores;
+        for my $core_id ( @cores_on_socket ) {
+            my $core_load = $sockets->{$socket_id}->{$core_id}->{load};
+            my $core_obligations = $sockets->{$socket_id}->{$core_id}->{obligations};
+            $socket_load += $core_load;
+            if ( $core_load < 50 && (!defined($core_obligations) || $core_obligations == 0) ) {
+                push( @free_cores, $core_id );
+            }
+        }
+        $free_sockets->{$socket_id} = \@free_cores;
+#       printf( "get_free_core_list: found %d free cores on socket %d\n", scalar(@free_cores), $socket_id );
+    }
+    return $free_sockets;
+}
+
+#
+# Given a number of threads and a reduced socket map (array of arrays), return
+# the first list of cores on which those threads can be bound.
+#
+sub find_free_cores {
+    my $threads = shift;
+    my $sockets = shift;
+
+    for my $socket_id ( keys(%$sockets) ) {
+        my $free_cores = $sockets->{$socket_id};
+        my $free_core_ct = scalar(@$free_cores);
+#       printf( "find_free_cores: got %2d free cores on socket %2d\n", $free_core_ct, $socket_id );
+        if ( $free_core_ct >= $threads ) {
+            my @slice = @$free_cores[0 .. ($threads-1)];
+            return \@slice;
+        }
+    }
+    print "got no free cores :(\n";
+    print_socket_core_map();
+    return [];
+}
+
+################################################################################
+### Figure out how many cores we need to reserve from OpenMP
+if ( scalar(@ARGV) < 1 ) {
+    print( STDERR "Syntax: $0 <myapplication.x> [args]\n" );
+    exit -1;
+}
+my $threads;
+if ( $ENV{OMP_NUM_THREADS} ) { $threads = $ENV{OMP_NUM_THREADS}; }
+else { $threads = 1; }
+
+### Set $socket_core_map = $FAKE_CORE_MAP for testing/debugging
+my $socket_core_map = get_socket_core_map();
+my $reduced_socket_map = get_free_core_list( $socket_core_map );
+my $free_cores = find_free_cores( $threads, $reduced_socket_map );
+if ( scalar(@$free_cores) == 0 ) {
+    printf( STDERR "ERROR: there aren't %d free cores on any sockets right now.\n", $threads );
+    exit 1;
+}
+
+### Make sure our CPU affinities are set for both Intel and GNU OpenMP APIs
+my $cpu_affinity_string= join(",", @$free_cores );
+$ENV{GOMP_CPU_AFFINITY} = $cpu_affinity_string;
+$ENV{KMP_AFFINITY} = sprintf("granularity=fine,proclist=[%s],explicit", $cpu_affinity_string );
+
+my @cmd = @ARGV;
+# unshift( @cmd, 'taskset', '-c', $cpu_affinity_string );
+
+printf( "Using cores [%s] with %d threads to run [%s]\n",
+    join( ", ", @$free_cores ), $threads, join( " ", @cmd ) );
+printf( "Using %s=%s\n", $_, $ENV{$_} ) foreach ( qw/GOMP_CPU_AFFINITY KMP_AFFINITY/ );
+system( @cmd )
