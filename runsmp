@@ -64,23 +64,28 @@ sub get_socket_core_map {
 
     ### now calculate load on each core in the socket map
     my @pids;
-    my $pidlist = `ps -me -otid= -opcpu= -opsr=`;
+    my $pidlist = `ps -me -otid= -opcpu= -opsr= -ouid=`;
     foreach my $line ( split(m/(\n\r?)+/, $pidlist) )
     {
-        next unless $line =~ m/^\s*(\d+)\s+(\S+)\s+(\d+)\s*$/;
-        my ( $pid, $load, $core_id ) = ( $1, $2, $3 );
+        next unless $line =~ m/^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s*$/;
+        my ( $pid, $load, $core_id, $uid ) = ( $1, $2, $3, $4 );
         my $socket_id = $cores[$core_id];
         $sockets->{$socket_id}->{$core_id}->{load} += $load;
 
         ### check for a restricted set of cpus (!= 0xffffffff)
         my $taskset_output = `taskset -p $pid 2>/dev/null`;
         my $cpu_mask = (split(m/\s+/, $taskset_output))[5];
-        if ( defined($cpu_mask) && $cpu_mask ne "ffffffff" ) {
+        if ( defined($cpu_mask) && $cpu_mask !~ m/^ff+$/ ) {
             $taskset_output = `taskset -c -p $pid 2>/dev/null`;
             my $cpu_range = expand_number_range( (split(m/\s+/, $taskset_output))[5] );
 #           printf(STDERR "pid %5d is bound to cores %s", $pid, join(":", @$cpu_range) );
-            if ( $load < 5.0 ) {
+### specify a load-based exclusion criterion
+#           if ( $load < 5.0 ) {
 #               print(STDERR "...but its load is < 5.0%, so it gets a pass\n");
+#           }
+### a uid-based criterion exclusion criterion is safer
+            if ( $uid == 0 ) {
+#               print(STDERR "...but it's a root process, so it gets a pass\n");
             }
             else {
 #               print(STDERR "...so an obligation is in place\n" );
@@ -135,7 +140,6 @@ sub get_free_core_list {
             }
         }
         $free_sockets->{$socket_id} = \@free_cores;
-#       printf( "get_free_core_list: found %d free cores on socket %d\n", scalar(@free_cores), $socket_id );
     }
     return $free_sockets;
 }
