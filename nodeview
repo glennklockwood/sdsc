@@ -23,7 +23,6 @@ die "Full job display not compatible with html output" if $options{html}
 
 ### Set appropriate parameters if not specified
 $options{slotsize} = 1 if !defined($options{slotsize});
-$options{torquebin} = '/opt/torque/bin' if !defined($options{torquebin});
 $options{format} = 'table' if !defined($options{format});
 $options{showstate} = 'overloads' if defined($options{overloads});
 
@@ -242,7 +241,9 @@ sub get_node_data
     }
     else
     {
-        my $exe = $options{torquebin} . '/pbsnodes -x';
+        my $exe;
+        if ( $options{torquebin} ) { $exe = $options{torquebin} . '/pbsnodes -x'; }
+        else { $exe = 'pbsnodes -x'; }
         $inputxml = `$exe`;
     }
     if ( $inputxml )
@@ -277,7 +278,10 @@ sub get_job_data
     }
     else
     {
-        my $exe = $options{torquebin} . '/qstat -x';
+        my $exe;
+        if ( $options{torquebin} ) { $exe = $options{torquebin} . '/qstat -x'; }
+        else { $exe = 'qstat -x'; }
+
         $inputxml=`$exe`;
     }
     if ( $inputxml )    # empty queue will cause XMLin to break
